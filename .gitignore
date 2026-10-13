@@ -1,0 +1,32 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Pipeline outputs (regenerate with `python src/model.py`)
+results/
+reports/models/
+reports/predictions.csv
+*.joblib
+
+# Large / external datasets (keep the bundled sample in data/raw/)
+data/external/
+data/processed/
+*.gz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
