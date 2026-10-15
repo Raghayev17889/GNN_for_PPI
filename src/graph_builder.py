@@ -11,20 +11,32 @@ Supported inputs
 All loaders return a tidy DataFrame with columns ``protein_a``, ``protein_b``
 and ``weight`` in which self-interactions are removed and each undirected
 pair appears exactly once (STRING lists every interaction in both directions).
+
+Link-prediction splits
+----------------------
+:func:`make_link_prediction_split` hides observed interactions and pairs them
+with sampled non-interacting protein pairs. Features for each split are
+computed on a graph from which that split's positive edges were removed, so a
+classifier never sees the interaction it is asked to predict (see the
+function docstring for the exact protocol).
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Hashable, Literal, Sequence
 
 import networkx as nx
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 EdgeFormat = Literal["auto", "edgelist", "string"]
+NegativeStrategy = Literal["uniform", "local"]
+Pair = tuple[Hashable, Hashable]
 
 STANDARD_COLUMNS = ["protein_a", "protein_b", "weight"]
 _STRING_COLUMNS = ("protein1", "protein2", "combined_score")
@@ -230,3 +242,260 @@ def graph_summary(graph: nx.Graph) -> dict[str, float]:
     if m > 0 and len(set(degrees)) > 1:
         summary["degree_assortativity"] = nx.degree_assortativity_coefficient(graph)
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Link-prediction splits
+# ---------------------------------------------------------------------------
+
+
+def _canonical(u: Hashable, v: Hashable) -> Pair:
+    """Order a node pair deterministically, independent of label type."""
+    return (u, v) if str(u) <= str(v) else (v, u)
+
+
+def _pair_key(pair: Pair) -> tuple[str, str]:
+    return str(pair[0]), str(pair[1])
+
+
+@dataclass
+class LinkPredictionSplit:
+    """Train/test protein pairs with labels and their feature graphs.
+
+    Attributes
+    ----------
+    train_graph:
+        Observed network minus test *and* training positives. Features for
+        ``train_pairs`` must be computed on this graph.
+    test_graph:
+        Observed network minus test positives. Features for ``test_pairs``
+        must be computed on this graph.
+    train_pairs, test_pairs:
+        Protein pairs; label 1 = hidden interaction, 0 = sampled non-edge.
+    train_labels, test_labels:
+        Binary labels aligned with the pairs.
+    """
+
+    train_graph: nx.Graph
+    test_graph: nx.Graph
+    train_pairs: list[Pair]
+    train_labels: np.ndarray
+    test_pairs: list[Pair]
+    test_labels: np.ndarray
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "train_graph_edges": self.train_graph.number_of_edges(),
+            "test_graph_edges": self.test_graph.number_of_edges(),
+            "train_positives": int(self.train_labels.sum()),
+            "train_negatives": int((self.train_labels == 0).sum()),
+            "test_positives": int(self.test_labels.sum()),
+            "test_negatives": int((self.test_labels == 0).sum()),
+        }
+
+
+def _random_spanning_forest(graph: nx.Graph, rng: np.random.Generator) -> set[frozenset]:
+    """Edges of a uniformly-weighted random spanning forest of ``graph``."""
+    edges = sorted((_canonical(u, v) for u, v in graph.edges()), key=_pair_key)
+    weighted = nx.Graph()
+    weighted.add_nodes_from(graph.nodes())
+    for (u, v), w in zip(edges, rng.random(len(edges))):
+        weighted.add_edge(u, v, w=w)
+    return {frozenset(e) for e in nx.minimum_spanning_edges(weighted, weight="w", data=False)}
+
+
+def sample_holdout_edges(
+    graph: nx.Graph,
+    n_edges: int,
+    rng: np.random.Generator,
+    keep_connected: bool = True,
+) -> list[Pair]:
+    """Sample ``n_edges`` edges to hide from ``graph``.
+
+    With ``keep_connected=True`` the edges of a random spanning forest are
+    protected, so removing the sample never disconnects a component or
+    isolates a protein (isolated proteins would have undefined features).
+    """
+    edges = sorted((_canonical(u, v) for u, v in graph.edges()), key=_pair_key)
+    if keep_connected:
+        protected = _random_spanning_forest(graph, rng)
+        candidates = [e for e in edges if frozenset(e) not in protected]
+    else:
+        candidates = edges
+    if n_edges > len(candidates):
+        raise ValueError(
+            f"Cannot hide {n_edges} edges: only {len(candidates)} are removable "
+            "without disconnecting the network. Lower the hold-out fractions."
+        )
+    chosen = rng.choice(len(candidates), size=n_edges, replace=False)
+    return [candidates[i] for i in sorted(chosen)]
+
+
+def sample_negative_pairs(
+    graph: nx.Graph,
+    n_pairs: int,
+    rng: np.random.Generator,
+    strategy: NegativeStrategy = "uniform",
+    walk_graph: nx.Graph | None = None,
+    forbidden: Sequence[Pair] = (),
+    max_attempts_per_pair: int = 200,
+) -> list[Pair]:
+    """Sample protein pairs that do **not** interact in ``graph``.
+
+    Parameters
+    ----------
+    graph:
+        The full observed network; returned pairs are never edges of it.
+    n_pairs:
+        Number of negative pairs to draw (without replacement).
+    strategy:
+        ``"uniform"`` draws pairs uniformly at random - the standard but
+        optimistic protocol, as most random pairs are far apart.
+        ``"local"`` draws pairs two or three steps apart via short random
+        walks on ``walk_graph``; these hard negatives resemble true
+        interactions topologically and give a more conservative estimate.
+    walk_graph:
+        Graph used for the random walks of the ``"local"`` strategy
+        (defaults to ``graph``). Pass the split's feature graph.
+    forbidden:
+        Pairs that must not be returned (e.g. negatives of another split).
+    """
+    if strategy not in ("uniform", "local"):
+        raise ValueError(f"Unknown negative sampling strategy: {strategy!r}")
+    walk_graph = graph if walk_graph is None else walk_graph
+    nodes = sorted(graph.nodes(), key=str)
+    if len(nodes) < 2:
+        raise ValueError("Need at least two proteins to sample negative pairs")
+
+    excluded = {frozenset(p) for p in forbidden}
+    chosen: list[Pair] = []
+    seen: set[frozenset] = set()
+    attempts, max_attempts = 0, max(1, n_pairs) * max_attempts_per_pair
+
+    while len(chosen) < n_pairs:
+        attempts += 1
+        if attempts > max_attempts:
+            raise RuntimeError(
+                f"Sampled only {len(chosen)}/{n_pairs} negative pairs after "
+                f"{max_attempts} attempts; the network may be too dense."
+            )
+        u = nodes[int(rng.integers(len(nodes)))]
+        if strategy == "uniform":
+            v = nodes[int(rng.integers(len(nodes)))]
+        else:
+            v = u
+            for _ in range(int(rng.integers(2, 4))):
+                neighbours = sorted(walk_graph.neighbors(v), key=str)
+                if not neighbours:
+                    break
+                v = neighbours[int(rng.integers(len(neighbours)))]
+        if u == v or graph.has_edge(u, v):
+            continue
+        key = frozenset((u, v))
+        if key in seen or key in excluded:
+            continue
+        seen.add(key)
+        chosen.append(_canonical(u, v))
+    return chosen
+
+
+def _shuffled(pairs: list[Pair], labels: np.ndarray, rng: np.random.Generator):
+    order = rng.permutation(len(pairs))
+    return [pairs[i] for i in order], labels[order]
+
+
+def make_link_prediction_split(
+    graph: nx.Graph,
+    test_fraction: float = 0.1,
+    train_fraction: float = 0.1,
+    negative_ratio: float = 1.0,
+    negative_strategy: NegativeStrategy = "uniform",
+    seed: int = 42,
+) -> LinkPredictionSplit:
+    """Create a leakage-free link-prediction split of a PPI network.
+
+    Protocol
+    --------
+    1. Hide ``test_fraction`` of the edges -> test positives.
+       ``test_graph = G - test positives``.
+    2. Hide a further ``train_fraction`` of the original edges from
+       ``test_graph`` -> training positives.
+       ``train_graph = test_graph - training positives``.
+    3. Sample ``negative_ratio`` x as many non-interacting pairs for each
+       split (never edges of ``G``; train and test negatives are disjoint).
+
+    A classifier is trained on features computed from ``train_graph`` and
+    evaluated on features computed from ``test_graph``. Neither split ever
+    sees its own positive edges, which mirrors the real task of predicting
+    interactions that have not been observed yet. Spanning-forest edges are
+    never hidden, so no protein becomes isolated.
+
+    Parameters
+    ----------
+    graph:
+        Observed PPI network.
+    test_fraction, train_fraction:
+        Fractions of the original edges hidden as test / training positives.
+    negative_ratio:
+        Number of negative pairs per positive pair.
+    negative_strategy:
+        ``"uniform"`` or ``"local"``; see :func:`sample_negative_pairs`.
+    seed:
+        Random seed controlling every sampling step.
+    """
+    if not (0 < test_fraction < 1 and 0 < train_fraction < 1):
+        raise ValueError("test_fraction and train_fraction must be in (0, 1)")
+    if test_fraction + train_fraction >= 1:
+        raise ValueError("test_fraction + train_fraction must be < 1")
+    if negative_ratio <= 0:
+        raise ValueError("negative_ratio must be positive")
+
+    rng = np.random.default_rng(seed)
+    n_edges = graph.number_of_edges()
+    n_test = max(1, int(round(test_fraction * n_edges)))
+    n_train = max(1, int(round(train_fraction * n_edges)))
+
+    test_pos = sample_holdout_edges(graph, n_test, rng)
+    test_graph = graph.copy()
+    test_graph.remove_edges_from(test_pos)
+
+    train_pos = sample_holdout_edges(test_graph, n_train, rng)
+    train_graph = test_graph.copy()
+    train_graph.remove_edges_from(train_pos)
+
+    test_neg = sample_negative_pairs(
+        graph,
+        int(round(negative_ratio * n_test)),
+        rng,
+        strategy=negative_strategy,
+        walk_graph=test_graph,
+    )
+    train_neg = sample_negative_pairs(
+        graph,
+        int(round(negative_ratio * n_train)),
+        rng,
+        strategy=negative_strategy,
+        walk_graph=train_graph,
+        forbidden=test_neg,
+    )
+
+    train_pairs, train_labels = _shuffled(
+        train_pos + train_neg,
+        np.r_[np.ones(len(train_pos), dtype=int), np.zeros(len(train_neg), dtype=int)],
+        rng,
+    )
+    test_pairs, test_labels = _shuffled(
+        test_pos + test_neg,
+        np.r_[np.ones(len(test_pos), dtype=int), np.zeros(len(test_neg), dtype=int)],
+        rng,
+    )
+    split = LinkPredictionSplit(
+        train_graph=train_graph,
+        test_graph=test_graph,
+        train_pairs=train_pairs,
+        train_labels=train_labels,
+        test_pairs=test_pairs,
+        test_labels=test_labels,
+    )
+    logger.info("Link-prediction split: %s", split.summary())
+    return split
