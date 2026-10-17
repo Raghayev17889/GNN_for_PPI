@@ -11,6 +11,7 @@ from src.feature_extractor import (
     NODE_METRICS,
     PAIR_HEURISTICS,
     TopologicalFeatureExtractor,
+    closeness_centrality,
     compute_node_metrics,
     extract_features,
     shortest_path_lengths,
@@ -79,6 +80,26 @@ def test_node_metrics_match_networkx(karate_graph):
         np.testing.assert_allclose(metrics[name], [reference[n] for n in metrics.index])
 
 
+def test_closeness_matches_networkx_on_disconnected_graph():
+    graph = nx.disjoint_union(nx.path_graph(5), nx.cycle_graph(4))
+    graph.add_node(99)
+    nodes = list(graph.nodes())
+    adjacency = nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, format="csr")
+    reference = nx.closeness_centrality(graph)
+    np.testing.assert_allclose(closeness_centrality(adjacency, chunk_size=3), [reference[n] for n in nodes])
+
+
+def test_sampled_betweenness(small_ppi_graph):
+    exact = compute_node_metrics(small_ppi_graph)["betweenness"]
+    # Asking for at least as many samples as proteins falls back to the exact value.
+    np.testing.assert_allclose(compute_node_metrics(small_ppi_graph, betweenness_samples=10_000)["betweenness"], exact)
+
+    a = compute_node_metrics(small_ppi_graph, betweenness_samples=100, seed=1)["betweenness"]
+    b = compute_node_metrics(small_ppi_graph, betweenness_samples=100, seed=1)["betweenness"]
+    np.testing.assert_allclose(a, b)
+    assert np.corrcoef(a, exact)[0, 1] > 0.9
+
+
 def test_features_are_symmetric(karate_graph, non_edges, features):
     swapped = extract_features(karate_graph, [(v, u) for u, v in non_edges])
     np.testing.assert_allclose(features.to_numpy(), swapped.to_numpy())
@@ -120,5 +141,7 @@ def test_transform_requires_fit():
 def test_invalid_parameters():
     with pytest.raises(ValueError):
         TopologicalFeatureExtractor(max_path_length=0)
+    with pytest.raises(ValueError):
+        TopologicalFeatureExtractor(betweenness_samples=0)
     with pytest.raises(ValueError):
         TopologicalFeatureExtractor().fit(nx.Graph())

@@ -16,6 +16,10 @@ betweenness
 closeness
     Inverse mean shortest-path distance to all other proteins.
 
+Betweenness is the expensive metric (``O(nm)``); for genome-scale networks
+pass ``betweenness_samples`` to estimate it from a random subset of source
+proteins. Closeness is computed exactly with SciPy's compiled graph routines.
+
 Pairwise heuristics
 -------------------
 common_neighbors
@@ -49,6 +53,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from scipy.sparse import csgraph
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +69,52 @@ PAIR_HEURISTICS: tuple[str, ...] = (
 )
 
 
-def compute_node_metrics(graph: nx.Graph) -> pd.DataFrame:
+def closeness_centrality(adjacency: sparse.csr_array, chunk_size: int = 256) -> np.ndarray:
+    """Closeness centrality of every node from a sparse adjacency matrix.
+
+    Uses the Wasserman-Faust correction for disconnected graphs, so the
+    result is identical to ``networkx.closeness_centrality`` but runs
+    breadth-first searches in compiled code, ``chunk_size`` sources at a time
+    to bound memory.
+    """
+    n = adjacency.shape[0]
+    closeness = np.zeros(n)
+    if n <= 1:
+        return closeness
+    for start in range(0, n, chunk_size):
+        sources = np.arange(start, min(start + chunk_size, n))
+        dist = csgraph.shortest_path(
+            adjacency, method="D", directed=False, unweighted=True, indices=sources
+        )
+        finite = np.isfinite(dist)
+        total = np.where(finite, dist, 0.0).sum(axis=1)
+        reached = finite.sum(axis=1) - 1  # exclude the source itself
+        with np.errstate(divide="ignore", invalid="ignore"):
+            values = (reached / total) * (reached / (n - 1))
+        closeness[sources] = np.where(total > 0, values, 0.0)
+    return closeness
+
+
+def compute_node_metrics(
+    graph: nx.Graph,
+    betweenness_samples: int | None = None,
+    seed: int | None = None,
+    adjacency: sparse.csr_array | None = None,
+) -> pd.DataFrame:
     """Compute node-level topological metrics.
+
+    Parameters
+    ----------
+    graph:
+        Interaction network.
+    betweenness_samples:
+        If given and smaller than the number of proteins, estimate
+        betweenness from this many randomly chosen source proteins
+        (Brandes & Pich, 2007). ``None`` computes it exactly.
+    seed:
+        Random seed for betweenness sampling.
+    adjacency:
+        Optional precomputed CSR adjacency in ``graph.nodes()`` order.
 
     Returns
     -------
@@ -73,17 +122,21 @@ def compute_node_metrics(graph: nx.Graph) -> pd.DataFrame:
     :data:`NODE_METRICS`, rows in ``graph.nodes()`` order.
     """
     nodes = list(graph.nodes())
-    logger.debug("Computing node metrics for %d proteins", len(nodes))
-    degree = dict(graph.degree())
+    n = len(nodes)
+    if adjacency is None:
+        adjacency = nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, format="csr")
+
+    k = betweenness_samples if betweenness_samples is not None and betweenness_samples < n else None
+    logger.debug("Computing node metrics for %d proteins (betweenness samples: %s)", n, k or "all")
+    degree = np.asarray(adjacency.sum(axis=1)).ravel()
     clustering = nx.clustering(graph)
-    betweenness = nx.betweenness_centrality(graph, normalized=True)
-    closeness = nx.closeness_centrality(graph)
+    betweenness = nx.betweenness_centrality(graph, k=k, normalized=True, seed=seed)
     return pd.DataFrame(
         {
-            "degree": [degree[n] for n in nodes],
-            "clustering": [clustering[n] for n in nodes],
-            "betweenness": [betweenness[n] for n in nodes],
-            "closeness": [closeness[n] for n in nodes],
+            "degree": degree,
+            "clustering": [clustering[v] for v in nodes],
+            "betweenness": [betweenness[v] for v in nodes],
+            "closeness": closeness_centrality(adjacency),
         },
         index=pd.Index(nodes, name="protein"),
     ).astype(float)
@@ -180,6 +233,11 @@ class TopologicalFeatureExtractor:
     ----------
     max_path_length:
         Distances beyond this are capped (see :func:`shortest_path_lengths`).
+    betweenness_samples:
+        Estimate betweenness from this many source proteins instead of all
+        of them (recommended above ~5,000 proteins).
+    seed:
+        Random seed for betweenness sampling.
 
     Example
     -------
@@ -190,10 +248,19 @@ class TopologicalFeatureExtractor:
     prediction: the graph *without* the pairs' own edges).
     """
 
-    def __init__(self, max_path_length: int = 6) -> None:
+    def __init__(
+        self,
+        max_path_length: int = 6,
+        betweenness_samples: int | None = None,
+        seed: int | None = 0,
+    ) -> None:
         if max_path_length < 1:
             raise ValueError("max_path_length must be >= 1")
+        if betweenness_samples is not None and betweenness_samples < 1:
+            raise ValueError("betweenness_samples must be a positive integer or None")
         self.max_path_length = max_path_length
+        self.betweenness_samples = betweenness_samples
+        self.seed = seed
 
     def fit(self, graph: nx.Graph) -> "TopologicalFeatureExtractor":
         if graph.number_of_nodes() == 0:
@@ -204,7 +271,12 @@ class TopologicalFeatureExtractor:
         self.adjacency_ = nx.to_scipy_sparse_array(
             graph, nodelist=self.nodes_, weight=None, dtype=float, format="csr"
         )
-        self.node_metrics_ = compute_node_metrics(graph)
+        self.node_metrics_ = compute_node_metrics(
+            graph,
+            betweenness_samples=self.betweenness_samples,
+            seed=self.seed,
+            adjacency=self.adjacency_,
+        )
         return self
 
     def _check_fitted(self) -> None:
