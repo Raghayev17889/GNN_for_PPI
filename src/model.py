@@ -4,35 +4,61 @@ Each candidate protein pair is represented by the topological feature vector
 from :mod:`src.feature_extractor`; a binary classifier learns to separate
 hidden true interactions from non-interacting pairs.
 
-Run the pipeline from the repository root::
+Pipeline (``python src/model.py``)
+----------------------------------
+1. Load the edge list and build the network (:mod:`src.graph_builder`).
+2. Hide interactions and sample non-interacting pairs (leakage-free split).
+3. Featurise train/test pairs on their own feature graphs.
+4. Cross-validate and fit the classifiers.
+5. Score held-out pairs; compare against unsupervised heuristics
+   (:mod:`src.evaluate`).
+6. Rank currently unobserved protein pairs as candidate novel interactions.
+7. Write metrics, predictions, figures and fitted models to ``--output-dir``.
+
+Examples::
 
     python src/model.py
-    python src/model.py --input data/external/4932.protein.links.v12.0.txt.gz --min-score 700
+    python src/model.py --negatives local --output-dir results/local
+    python src/model.py --input data/external/4932.protein.links.v12.0.txt.gz \
+        --min-score 700 --betweenness-samples 500
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 if __package__ in (None, ""):  # allow `python src/model.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import joblib
+import networkx as nx
 import numpy as np
 import pandas as pd
+from scipy import sparse
 from sklearn.base import ClassifierMixin, clone
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
+from src.evaluate import (
+    compute_permutation_importance,
+    display_name,
+    evaluate_scores,
+    heuristic_scores,
+    plot_confusion_matrix,
+    plot_feature_importance,
+    plot_pr_curves,
+    plot_roc_curves,
+    save_figure,
+)
 from src.feature_extractor import TopologicalFeatureExtractor
 from src.graph_builder import (
     LinkPredictionSplit,
@@ -48,6 +74,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = ROOT / "data" / "raw" / "sample_ppi_edges.tsv"
 DEFAULT_OUTPUT = ROOT / "results"
 MODEL_NAMES: tuple[str, ...] = ("logistic_regression", "random_forest", "gradient_boosting")
+#: Heuristics drawn next to the models in ROC / PR figures (all are tabulated).
+PLOT_BASELINES: tuple[str, ...] = ("l3", "common_neighbors", "preferential_attachment")
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +187,81 @@ def load_model(path: str | Path) -> TrainedModel:
 
 
 # ---------------------------------------------------------------------------
+# Novel interaction ranking
+# ---------------------------------------------------------------------------
+
+
+def l3_candidate_pairs(
+    graph: nx.Graph, n_candidates: int = 2000, chunk_size: int = 512
+) -> list[tuple]:
+    """Unobserved protein pairs with the highest L3 scores.
+
+    Scoring all ``O(n^2)`` non-interacting pairs is infeasible for real
+    interactomes, so candidates are pre-selected by the degree-normalised
+    count of length-3 paths (the strongest single predictor). Rows of
+    ``A D^-1/2 A D^-1/2 A`` are computed ``chunk_size`` at a time.
+    """
+    nodes = list(graph.nodes())
+    adjacency = nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, dtype=float, format="csr")
+    degree = np.asarray(adjacency.sum(axis=1)).ravel()
+    inv_sqrt = sparse.diags_array(np.where(degree > 0, 1.0 / np.sqrt(np.maximum(degree, 1)), 0.0))
+    right = inv_sqrt @ adjacency @ inv_sqrt @ adjacency
+
+    best_scores = np.empty(0)
+    best_rows = np.empty(0, dtype=np.int64)
+    best_cols = np.empty(0, dtype=np.int64)
+    for start in range(0, len(nodes), chunk_size):
+        block = sparse.coo_array(adjacency[start : start + chunk_size] @ right)
+        rows = block.row.astype(np.int64) + start
+        cols = block.col.astype(np.int64)
+        keep = rows < cols  # each unordered pair once, no self-pairs
+        rows, cols, scores = rows[keep], cols[keep], block.data[keep]
+        if rows.size:
+            observed = np.asarray(adjacency[rows, cols]).ravel() > 0
+            rows, cols, scores = rows[~observed], cols[~observed], scores[~observed]
+
+        best_scores = np.concatenate([best_scores, scores])
+        best_rows = np.concatenate([best_rows, rows])
+        best_cols = np.concatenate([best_cols, cols])
+        if best_scores.size > n_candidates:
+            top = np.argpartition(-best_scores, n_candidates)[:n_candidates]
+            best_scores, best_rows, best_cols = best_scores[top], best_rows[top], best_cols[top]
+
+    order = np.lexsort((best_cols, best_rows, -best_scores))
+    return [(nodes[best_rows[i]], nodes[best_cols[i]]) for i in order]
+
+
+def rank_novel_interactions(
+    graph: nx.Graph,
+    model: TrainedModel,
+    top_k: int = 100,
+    n_candidates: int = 2000,
+    extractor: TopologicalFeatureExtractor | None = None,
+) -> pd.DataFrame:
+    """Score unobserved protein pairs and return the ``top_k`` most likely.
+
+    Features are computed on the full observed network, so every currently
+    known interaction informs the prediction.
+    """
+    candidates = l3_candidate_pairs(graph, n_candidates=n_candidates)
+    if not candidates:
+        return pd.DataFrame(columns=["protein_a", "protein_b", "probability", "l3", "common_neighbors"])
+    extractor = (extractor or TopologicalFeatureExtractor()).fit(graph)
+    X = extractor.transform(candidates)
+    ranked = pd.DataFrame(
+        {
+            "protein_a": [u for u, _ in candidates],
+            "protein_b": [v for _, v in candidates],
+            "probability": model.predict_proba(X),
+            "l3": X["l3"].to_numpy(),
+            "common_neighbors": X["common_neighbors"].to_numpy(),
+        }
+    )
+    ranked = ranked.sort_values(["probability", "l3"], ascending=False, kind="stable")
+    return ranked.head(top_k).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -183,22 +286,26 @@ class PipelineConfig:
     cv_folds: int = 5
     betweenness_samples: int | None = None
     max_path_length: int = 6
+    top_novel: int = 100
+    importance_repeats: int = 10
     seed: int = 42
     save_models: bool = True
+
+    def extractor(self) -> TopologicalFeatureExtractor:
+        return TopologicalFeatureExtractor(
+            max_path_length=self.max_path_length,
+            betweenness_samples=self.betweenness_samples,
+            seed=self.seed,
+        )
 
 
 def build_feature_matrices(
     split: LinkPredictionSplit, config: PipelineConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Featurise train pairs on ``train_graph`` and test pairs on ``test_graph``."""
-    kwargs = dict(
-        max_path_length=config.max_path_length,
-        betweenness_samples=config.betweenness_samples,
-        seed=config.seed,
-    )
     start = time.perf_counter()
-    X_train = TopologicalFeatureExtractor(**kwargs).fit_transform(split.train_graph, split.train_pairs)
-    X_test = TopologicalFeatureExtractor(**kwargs).fit_transform(split.test_graph, split.test_pairs)
+    X_train = config.extractor().fit_transform(split.train_graph, split.train_pairs)
+    X_test = config.extractor().fit_transform(split.test_graph, split.test_pairs)
     logger.info(
         "Extracted %d features for %d train / %d test pairs (%.1fs)",
         X_train.shape[1],
@@ -210,7 +317,19 @@ def build_feature_matrices(
 
 
 def run_pipeline(config: PipelineConfig) -> dict:
-    """Load data, split, featurise, train and score every model on the test set."""
+    """Run the full pipeline and write all artifacts to ``config.output_dir``.
+
+    Returns
+    -------
+    dict with the network summary, split sizes, metric table (as records),
+    best model name, artifact paths and runtime.
+    """
+    t0 = time.perf_counter()
+    output_dir = Path(config.output_dir)
+    figures_dir = output_dir / "figures"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Network
     edges = load_edge_list(
         config.input_path,
         fmt=config.fmt,
@@ -223,6 +342,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
     summary = graph_summary(graph)
     logger.info("Network: %d proteins, %d interactions", summary["proteins"], summary["interactions"])
 
+    # 2-3. Split and featurise
     split = make_link_prediction_split(
         graph,
         test_fraction=config.test_fraction,
@@ -232,17 +352,85 @@ def run_pipeline(config: PipelineConfig) -> dict:
         seed=config.seed,
     )
     X_train, X_test = build_feature_matrices(split, config)
+    y_test = split.test_labels
+
+    # 4. Train
     models = train_models(X_train, split.train_labels, config.models, config.seed, config.cv_folds)
 
-    test_auc = {name: roc_auc_score(split.test_labels, m.predict_proba(X_test)) for name, m in models.items()}
-    for name, auc in test_auc.items():
-        logger.info("Test ROC-AUC %-20s %.3f", name, auc)
+    # 5. Evaluate on held-out interactions
+    model_scores = {name: m.predict_proba(X_test) for name, m in models.items()}
+    baseline_scores = heuristic_scores(X_test)
+    metrics = evaluate_scores(y_test, model_scores, baseline_scores)
+    for name, model in models.items():
+        for key, value in model.cv_scores.items():
+            metrics.loc[name, key] = value
+    best = str(metrics[metrics["kind"] == "model"]["roc_auc"].idxmax())
+    logger.info(
+        "Held-out performance (%s negatives):\n%s",
+        config.negative_strategy,
+        metrics[["kind", "roc_auc", "average_precision", "r_precision", "f1"]].round(3).to_string(),
+    )
 
+    importance = compute_permutation_importance(
+        models[best].estimator, X_test, y_test, n_repeats=config.importance_repeats, seed=config.seed
+    )
+
+    kinds = {**{n: "model" for n in model_scores}, **{n: "heuristic" for n in baseline_scores}}
+    plotted = {**model_scores, **{n: baseline_scores[n] for n in PLOT_BASELINES if n in baseline_scores}}
+    figures = {
+        "roc_curves": save_figure(plot_roc_curves(y_test, plotted, kinds), figures_dir / "roc_curves.png"),
+        "pr_curves": save_figure(plot_pr_curves(y_test, plotted, kinds), figures_dir / "pr_curves.png"),
+        "confusion_matrix": save_figure(
+            plot_confusion_matrix(
+                y_test, models[best].predict(X_test), title=f"Confusion matrix - {display_name(best)}"
+            ),
+            figures_dir / "confusion_matrix.png",
+        ),
+        "feature_importance": save_figure(
+            plot_feature_importance(importance, title=f"Permutation importance - {display_name(best)}"),
+            figures_dir / "feature_importance.png",
+        ),
+    }
+
+    # 6. Candidate novel interactions
+    novel = None
+    if config.top_novel > 0:
+        novel = rank_novel_interactions(graph, models[best], top_k=config.top_novel, extractor=config.extractor())
+        novel.to_csv(output_dir / "novel_predictions.csv", index=False)
+        logger.info("Top predicted novel interaction: %s", novel.iloc[0].to_dict() if len(novel) else None)
+
+    # 7. Artifacts
+    predictions = pd.DataFrame(
+        {
+            "protein_a": [u for u, _ in split.test_pairs],
+            "protein_b": [v for _, v in split.test_pairs],
+            "label": y_test,
+            **{f"model__{n}": s for n, s in model_scores.items()},
+            **{f"heuristic__{n}": s for n, s in baseline_scores.items()},
+        }
+    )
+    predictions.to_csv(output_dir / "predictions.csv", index=False)
+    metrics.to_csv(output_dir / "metrics.csv", index_label="method")
+    importance.to_csv(output_dir / "feature_importance.csv", index=False)
     if config.save_models:
         for name, model in models.items():
-            save_model(model, Path(config.output_dir) / "models" / f"{name}.joblib")
+            save_model(model, output_dir / "models" / f"{name}.joblib")
 
-    return {"graph_summary": summary, "split": split.summary(), "test_roc_auc": test_auc}
+    results = {
+        "config": {k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()},
+        "graph_summary": summary,
+        "split": split.summary(),
+        "best_model": best,
+        "metrics": json.loads(metrics.reset_index().to_json(orient="records")),
+        "figures": {k: str(v) for k, v in figures.items()},
+        "runtime_seconds": round(time.perf_counter() - t0, 1),
+    }
+    with open(output_dir / "run_summary.json", "w", encoding="utf-8") as handle:
+        json.dump(results, handle, indent=2)
+    logger.info("Best model: %s. Artifacts written to %s (%.1fs)", best, output_dir, results["runtime_seconds"])
+    results["metrics_table"] = metrics
+    results["novel_predictions"] = novel
+    return results
 
 
 def parse_args(argv: list[str] | None = None) -> PipelineConfig:
@@ -271,6 +459,8 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
     model.add_argument("--cv-folds", type=int, default=5, help="0 or 1 disables cross-validation")
     model.add_argument("--betweenness-samples", type=int, help="approximate betweenness with k sources")
     model.add_argument("--max-path-length", type=int, default=6)
+    model.add_argument("--top-novel", type=int, default=100, help="novel interactions to rank (0 = skip)")
+    model.add_argument("--importance-repeats", type=int, default=10, help="permutation importance repeats")
 
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--seed", type=int, default=42)
@@ -300,6 +490,8 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
         cv_folds=args.cv_folds,
         betweenness_samples=args.betweenness_samples,
         max_path_length=args.max_path_length,
+        top_novel=args.top_novel,
+        importance_repeats=args.importance_repeats,
         seed=args.seed,
         save_models=not args.no_save_models,
     )
