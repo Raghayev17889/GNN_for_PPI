@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import matplotlib
+
+matplotlib.use("Agg")  # tests only write figures to disk
+
 import networkx as nx
 import pytest
 

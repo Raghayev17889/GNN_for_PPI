@@ -58,6 +58,7 @@ from src.evaluate import (
     plot_pr_curves,
     plot_roc_curves,
     save_figure,
+    use_headless_backend,
 )
 from src.feature_extractor import TopologicalFeatureExtractor
 from src.graph_builder import (
@@ -498,7 +499,9 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
 
 
 def main(argv: list[str] | None = None) -> dict:
-    return run_pipeline(parse_args(argv))
+    config = parse_args(argv)
+    use_headless_backend()
+    return run_pipeline(config)
 
 
 if __name__ == "__main__":

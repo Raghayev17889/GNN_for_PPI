@@ -33,9 +33,6 @@ if __package__ in (None, ""):  # allow `python src/evaluate.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import matplotlib
-
-matplotlib.use("Agg")  # headless backend: figures are written to disk
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -126,6 +123,16 @@ HEURISTIC_BASELINES: dict[str, float] = {
     "preferential_attachment": 1.0,
     "shortest_path": -1.0,
 }
+
+
+def use_headless_backend() -> None:
+    """Switch matplotlib to the non-interactive Agg backend.
+
+    Called by the command-line entry points, which only write figures to
+    disk. Library code leaves the backend alone so that notebooks keep
+    rendering figures inline.
+    """
+    matplotlib.use("Agg")
 
 
 @contextmanager
@@ -412,6 +419,7 @@ def main(argv: list[str] | None = None) -> pd.DataFrame:
     parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    use_headless_backend()
 
     predictions = pd.read_csv(args.predictions)
     y_true = predictions["label"].to_numpy()
