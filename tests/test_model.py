@@ -10,13 +10,16 @@ import pytest
 
 from src.model import (
     MODEL_NAMES,
+    SAMPLE_INPUT,
     PipelineConfig,
     TrainedModel,
+    add_symbols,
     build_model,
     l3_candidate_pairs,
     load_model,
     main,
     rank_novel_interactions,
+    resolve_betweenness_samples,
     save_model,
     train_models,
 )
@@ -80,8 +83,8 @@ def test_rank_novel_interactions(small_ppi_graph):
 def test_pipeline_end_to_end(tmp_path):
     graph = nx.powerlaw_cluster_graph(250, 3, 0.3, seed=5)
     edges = pd.DataFrame(
-        [(f"P{u:03d}", f"P{v:03d}", 900) for u, v in graph.edges()],
-        columns=["protein_a", "protein_b", "score"],
+        [(f"P{u:03d}", f"P{v:03d}", 900, f"GENE{u}", f"GENE{v}") for u, v in graph.edges()],
+        columns=["protein_a", "protein_b", "weight", "symbol_a", "symbol_b"],
     )
     data = tmp_path / "edges.tsv"
     edges.to_csv(data, sep="\t", index=False)
@@ -117,13 +120,36 @@ def test_pipeline_end_to_end(tmp_path):
 
     predictions = pd.read_csv(out / "predictions.csv")
     assert predictions["label"].sum() == summary["split"]["test_positives"]
-    assert len(pd.read_csv(out / "novel_predictions.csv")) == 10
+    assert predictions["symbol_a"].str.startswith("GENE").all()
+    novel = pd.read_csv(out / "novel_predictions.csv")
+    assert len(novel) == 10
+    assert (novel["symbol_a"] == "GENE" + novel["protein_a"].str[1:].astype(int).astype(str)).all()
+    assert summary["input"].endswith("edges.tsv")
 
 
-def test_config_defaults_point_at_bundled_sample():
+def test_config_defaults_to_hi_iii():
     config = PipelineConfig()
-    assert config.input_path.name == "sample_ppi_edges.tsv"
-    assert config.input_path.exists()
+    assert config.dataset == "hi-iii" and config.input_path is None
+    assert PipelineConfig(input_path=SAMPLE_INPUT).resolve_input() == SAMPLE_INPUT
+    assert SAMPLE_INPUT.exists()
+    with pytest.raises(ValueError):
+        PipelineConfig(dataset=None).resolve_input()
+
+
+def test_resolve_betweenness_samples():
+    assert resolve_betweenness_samples("auto", 2000) is None
+    assert resolve_betweenness_samples("auto", 5000) == 1000
+    assert resolve_betweenness_samples("exact", 50_000) is None
+    assert resolve_betweenness_samples(None, 50_000) is None
+    assert resolve_betweenness_samples(250, 10) == 250
+
+
+def test_symbols_are_added_to_outputs():
+    table = pd.DataFrame({"protein_a": ["1", "2"], "protein_b": ["3", "4"], "probability": [0.9, 0.1]})
+    labelled = add_symbols(table, {"1": "A1BG", "3": "A2M"})
+    assert labelled.columns.tolist()[:4] == ["protein_a", "protein_b", "symbol_a", "symbol_b"]
+    assert labelled.loc[0, "symbol_a"] == "A1BG" and pd.isna(labelled.loc[1, "symbol_a"])
+    assert add_symbols(table, {}) is table
 
 
 def test_portable_paths():

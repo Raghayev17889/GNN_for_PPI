@@ -6,7 +6,9 @@ hidden true interactions from non-interacting pairs.
 
 Pipeline (``python src/model.py``)
 ----------------------------------
-1. Load the edge list and build the network (:mod:`src.graph_builder`).
+1. Load the network: by default the preprocessed HI-III human interactome
+   (downloaded and cleaned on first use, see :mod:`src.preprocessing`), or
+   any edge list passed with ``--input``.
 2. Hide interactions and sample non-interacting pairs (leakage-free split).
 3. Featurise train/test pairs on their own feature graphs.
 4. Cross-validate and fit the classifiers.
@@ -17,9 +19,10 @@ Pipeline (``python src/model.py``)
 
 Examples::
 
-    python src/model.py
-    python src/model.py --negatives local --output-dir results/local
-    python src/model.py --input data/external/4932.protein.links.v12.0.txt.gz \
+    python src/model.py                                   # HI-III human interactome
+    python src/model.py --dataset bioplex-2 --negatives local
+    python src/model.py --input data/raw/sample_ppi_edges.tsv   # synthetic sample
+    python src/model.py --input data/external/9606.protein.links.v12.0.txt.gz \
         --min-score 700 --betweenness-samples 500
 """
 
@@ -60,6 +63,7 @@ from src.evaluate import (
     save_figure,
     use_headless_backend,
 )
+from src.datasets import INTERACTOMES
 from src.feature_extractor import TopologicalFeatureExtractor
 from src.graph_builder import (
     LinkPredictionSplit,
@@ -68,12 +72,18 @@ from src.graph_builder import (
     load_edge_list,
     make_link_prediction_split,
 )
+from src.preprocessing import load_symbol_map, processed_path
 
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT = ROOT / "data" / "raw" / "sample_ppi_edges.tsv"
+DEFAULT_DATASET = "hi-iii"
+SAMPLE_INPUT = ROOT / "data" / "raw" / "sample_ppi_edges.tsv"
 DEFAULT_OUTPUT = ROOT / "results"
+#: ``betweenness_samples="auto"``: exact betweenness up to this many proteins,
+#: otherwise estimated from ``AUTO_BETWEENNESS_SAMPLES`` random sources.
+AUTO_BETWEENNESS_NODES = 3000
+AUTO_BETWEENNESS_SAMPLES = 1000
 MODEL_NAMES: tuple[str, ...] = ("logistic_regression", "random_forest", "gradient_boosting")
 #: Heuristics drawn next to the models in ROC / PR figures (all are tabulated).
 PLOT_BASELINES: tuple[str, ...] = ("l3", "common_neighbors", "preferential_attachment")
@@ -238,6 +248,7 @@ def rank_novel_interactions(
     top_k: int = 100,
     n_candidates: int = 2000,
     extractor: TopologicalFeatureExtractor | None = None,
+    symbols: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Score unobserved protein pairs and return the ``top_k`` most likely.
 
@@ -259,7 +270,18 @@ def rank_novel_interactions(
         }
     )
     ranked = ranked.sort_values(["probability", "l3"], ascending=False, kind="stable")
-    return ranked.head(top_k).reset_index(drop=True)
+    ranked = ranked.head(top_k).reset_index(drop=True)
+    return add_symbols(ranked, symbols)
+
+
+def add_symbols(table: pd.DataFrame, symbols: dict[str, str] | None) -> pd.DataFrame:
+    """Insert ``symbol_a`` / ``symbol_b`` after the protein columns when symbols are known."""
+    if not symbols:
+        return table
+    table = table.copy()
+    table.insert(2, "symbol_a", table["protein_a"].map(symbols))
+    table.insert(3, "symbol_b", table["protein_b"].map(symbols))
+    return table
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +298,25 @@ def _portable_path(path: str | Path) -> str:
         return str(path)
 
 
+def resolve_betweenness_samples(setting: int | str | None, n_proteins: int) -> int | None:
+    """Translate ``"auto"`` / ``"exact"`` / ``None`` / an integer into a sample size."""
+    if setting is None or setting == "exact":
+        return None
+    if setting == "auto":
+        return AUTO_BETWEENNESS_SAMPLES if n_proteins > AUTO_BETWEENNESS_NODES else None
+    return int(setting)
+
+
 @dataclass
 class PipelineConfig:
-    """All settings of an end-to-end run (mirrors the command-line options)."""
+    """All settings of an end-to-end run (mirrors the command-line options).
 
-    input_path: Path = DEFAULT_INPUT
+    The network is ``input_path`` when given, otherwise the preprocessed
+    registry ``dataset``.
+    """
+
+    dataset: str | None = DEFAULT_DATASET
+    input_path: Path | None = None
     output_dir: Path = DEFAULT_OUTPUT
     fmt: str = "auto"
     source_col: str | None = None
@@ -294,17 +330,25 @@ class PipelineConfig:
     negative_strategy: str = "uniform"
     models: tuple[str, ...] = MODEL_NAMES
     cv_folds: int = 5
-    betweenness_samples: int | None = None
+    betweenness_samples: int | str | None = "auto"
     max_path_length: int = 6
     top_novel: int = 100
     importance_repeats: int = 10
     seed: int = 42
     save_models: bool = True
 
-    def extractor(self) -> TopologicalFeatureExtractor:
+    def resolve_input(self) -> Path:
+        """The edge list to load, preprocessing the registry dataset on first use."""
+        if self.input_path is not None:
+            return Path(self.input_path)
+        if self.dataset is None:
+            raise ValueError("Set either input_path or dataset")
+        return processed_path(self.dataset)
+
+    def extractor(self, n_proteins: int = 0) -> TopologicalFeatureExtractor:
         return TopologicalFeatureExtractor(
             max_path_length=self.max_path_length,
-            betweenness_samples=self.betweenness_samples,
+            betweenness_samples=resolve_betweenness_samples(self.betweenness_samples, n_proteins),
             seed=self.seed,
         )
 
@@ -314,8 +358,9 @@ def build_feature_matrices(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Featurise train pairs on ``train_graph`` and test pairs on ``test_graph``."""
     start = time.perf_counter()
-    X_train = config.extractor().fit_transform(split.train_graph, split.train_pairs)
-    X_test = config.extractor().fit_transform(split.test_graph, split.test_pairs)
+    n_proteins = split.train_graph.number_of_nodes()
+    X_train = config.extractor(n_proteins).fit_transform(split.train_graph, split.train_pairs)
+    X_test = config.extractor(n_proteins).fit_transform(split.test_graph, split.test_pairs)
     logger.info(
         "Extracted %d features for %d train / %d test pairs (%.1fs)",
         X_train.shape[1],
@@ -340,8 +385,9 @@ def run_pipeline(config: PipelineConfig) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Network
+    input_path = config.resolve_input()
     edges = load_edge_list(
-        config.input_path,
+        input_path,
         fmt=config.fmt,
         source_col=config.source_col,
         target_col=config.target_col,
@@ -350,7 +396,13 @@ def run_pipeline(config: PipelineConfig) -> dict:
     )
     graph = build_graph(edges, largest_component=config.largest_component)
     summary = graph_summary(graph)
-    logger.info("Network: %d proteins, %d interactions", summary["proteins"], summary["interactions"])
+    symbols = _symbols_for(input_path)
+    logger.info(
+        "Network %s: %d proteins, %d interactions",
+        input_path.name,
+        summary["proteins"],
+        summary["interactions"],
+    )
 
     # 2-3. Split and featurise
     split = make_link_prediction_split(
@@ -405,7 +457,13 @@ def run_pipeline(config: PipelineConfig) -> dict:
     # 6. Candidate novel interactions
     novel = None
     if config.top_novel > 0:
-        novel = rank_novel_interactions(graph, models[best], top_k=config.top_novel, extractor=config.extractor())
+        novel = rank_novel_interactions(
+            graph,
+            models[best],
+            top_k=config.top_novel,
+            extractor=config.extractor(graph.number_of_nodes()),
+            symbols=symbols,
+        )
         novel.to_csv(output_dir / "novel_predictions.csv", index=False)
         logger.info("Top predicted novel interaction: %s", novel.iloc[0].to_dict() if len(novel) else None)
 
@@ -419,7 +477,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
             **{f"heuristic__{n}": s for n, s in baseline_scores.items()},
         }
     )
-    predictions.to_csv(output_dir / "predictions.csv", index=False)
+    add_symbols(predictions, symbols).to_csv(output_dir / "predictions.csv", index=False)
     metrics.to_csv(output_dir / "metrics.csv", index_label="method")
     importance.to_csv(output_dir / "feature_importance.csv", index=False)
     if config.save_models:
@@ -428,6 +486,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
 
     results = {
         "config": {k: (_portable_path(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()},
+        "input": _portable_path(input_path),
         "graph_summary": summary,
         "split": split.summary(),
         "best_model": best,
@@ -443,12 +502,39 @@ def run_pipeline(config: PipelineConfig) -> dict:
     return results
 
 
+def _symbols_for(path: Path) -> dict[str, str]:
+    """Gene symbols from a processed edge list; empty for other formats."""
+    try:
+        return load_symbol_map(path)
+    except (ValueError, pd.errors.ParserError, UnicodeDecodeError):
+        return {}
+
+
+def _betweenness_arg(value: str) -> int | str:
+    if value in ("auto", "exact"):
+        return value
+    try:
+        samples = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("use 'auto', 'exact' or a positive integer") from None
+    if samples < 1:
+        raise argparse.ArgumentTypeError("sample size must be positive")
+    return samples
+
+
 def parse_args(argv: list[str] | None = None) -> PipelineConfig:
     parser = argparse.ArgumentParser(
         description="Predict protein-protein interactions from network topology."
     )
     data = parser.add_argument_group("data")
-    data.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="PPI edge list (TSV/CSV/STRING)")
+    source = data.add_mutually_exclusive_group()
+    source.add_argument(
+        "--dataset",
+        choices=INTERACTOMES,
+        default=DEFAULT_DATASET,
+        help="preprocessed registry interactome (default: %(default)s)",
+    )
+    source.add_argument("--input", type=Path, help="any PPI edge list (TSV/CSV/STRING) instead of --dataset")
     data.add_argument("--format", dest="fmt", choices=("auto", "edgelist", "string"), default="auto")
     data.add_argument("--source-col", help="column of the first interactor")
     data.add_argument("--target-col", help="column of the second interactor")
@@ -467,7 +553,13 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
     model = parser.add_argument_group("features and models")
     model.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=list(MODEL_NAMES))
     model.add_argument("--cv-folds", type=int, default=5, help="0 or 1 disables cross-validation")
-    model.add_argument("--betweenness-samples", type=int, help="approximate betweenness with k sources")
+    model.add_argument(
+        "--betweenness-samples",
+        type=_betweenness_arg,
+        default="auto",
+        help=f"'exact', an integer k (sample k sources) or 'auto': exact up to "
+        f"{AUTO_BETWEENNESS_NODES:,} proteins, else {AUTO_BETWEENNESS_SAMPLES:,} samples",
+    )
     model.add_argument("--max-path-length", type=int, default=6)
     model.add_argument("--top-novel", type=int, default=100, help="novel interactions to rank (0 = skip)")
     model.add_argument("--importance-repeats", type=int, default=10, help="permutation importance repeats")
@@ -484,6 +576,7 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
         datefmt="%H:%M:%S",
     )
     return PipelineConfig(
+        dataset=None if args.input else args.dataset,
         input_path=args.input,
         output_dir=args.output_dir,
         fmt=args.fmt,
