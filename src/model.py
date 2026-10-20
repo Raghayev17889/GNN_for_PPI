@@ -267,6 +267,15 @@ def rank_novel_interactions(
 # ---------------------------------------------------------------------------
 
 
+def _portable_path(path: str | Path) -> str:
+    """Repository-relative POSIX path when possible, so run summaries are portable."""
+    path = Path(path).resolve()
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
 @dataclass
 class PipelineConfig:
     """All settings of an end-to-end run (mirrors the command-line options)."""
@@ -418,12 +427,12 @@ def run_pipeline(config: PipelineConfig) -> dict:
             save_model(model, output_dir / "models" / f"{name}.joblib")
 
     results = {
-        "config": {k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()},
+        "config": {k: (_portable_path(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()},
         "graph_summary": summary,
         "split": split.summary(),
         "best_model": best,
         "metrics": json.loads(metrics.reset_index().to_json(orient="records")),
-        "figures": {k: str(v) for k, v in figures.items()},
+        "figures": {k: _portable_path(v) for k, v in figures.items()},
         "runtime_seconds": round(time.perf_counter() - t0, 1),
     }
     with open(output_dir / "run_summary.json", "w", encoding="utf-8") as handle:

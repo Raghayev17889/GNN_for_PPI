@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import networkx as nx
 import numpy as np
@@ -123,3 +124,10 @@ def test_config_defaults_point_at_bundled_sample():
     config = PipelineConfig()
     assert config.input_path.name == "sample_ppi_edges.tsv"
     assert config.input_path.exists()
+
+
+def test_portable_paths():
+    from src.model import ROOT, _portable_path
+
+    assert _portable_path(ROOT / "data" / "raw" / "sample_ppi_edges.tsv") == "data/raw/sample_ppi_edges.tsv"
+    assert Path(_portable_path("/somewhere/else.tsv")).is_absolute()
