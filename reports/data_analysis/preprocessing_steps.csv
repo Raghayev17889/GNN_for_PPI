@@ -1,0 +1,25 @@
+dataset,step,interactions_in,interactions_out,interactions_removed,proteins_in,proteins_out,proteins_removed
+hi-iii,identifiers,23322,23322,0,5604,5604,0
+hi-iii,self-interactions,23322,23000,322,5604,5579,25
+hi-iii,duplicates,23000,23000,0,5579,5579,0
+hi-iii,annotation,23000,22984,16,5579,5572,7
+hi-iii,protein-coding,22984,22312,672,5572,5417,155
+hi-iii,largest component,22312,22195,117,5417,5216,201
+hi-ii-14,identifiers,13868,13868,0,4298,4298,0
+hi-ii-14,self-interactions,13868,13350,518,4298,4224,74
+hi-ii-14,duplicates,13350,13350,0,4224,4224,0
+hi-ii-14,annotation,13350,13329,21,4224,4220,4
+hi-ii-14,protein-coding,13329,12951,378,4220,4113,107
+hi-ii-14,largest component,12951,12883,68,4113,3985,128
+lit-bm-13,identifiers,11045,11045,0,5545,5545,0
+lit-bm-13,self-interactions,11045,10155,890,5545,5385,160
+lit-bm-13,duplicates,10155,10155,0,5385,5385,0
+lit-bm-13,annotation,10155,10155,0,5385,5385,0
+lit-bm-13,protein-coding,10155,10140,15,5385,5369,16
+lit-bm-13,largest component,10140,9865,275,5369,4909,460
+bioplex-2,identifiers,56553,56553,0,10961,10961,0
+bioplex-2,self-interactions,56553,56553,0,10961,10961,0
+bioplex-2,duplicates,56553,56553,0,10961,10961,0
+bioplex-2,annotation,56553,56344,209,10961,10931,30
+bioplex-2,protein-coding,56344,55895,449,10931,10859,72
+bioplex-2,largest component,55895,55862,33,10859,10801,58

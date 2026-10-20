@@ -1,0 +1,5 @@
+,kind,proteins,interactions,density,mean_degree,median_degree,max_degree,average_clustering,transitivity,degree_assortativity,mean_shortest_path,connected_components,largest_component_fraction
+hi-iii,binary,5216.0,22195.0,0.0016,8.5104,3.0,505.0,0.0691,0.041,-0.1914,3.913,1.0,1.0
+hi-ii-14,binary,3985.0,12883.0,0.0016,6.4657,2.0,296.0,0.0528,0.0337,-0.2134,4.0796,1.0,1.0
+lit-bm-13,binary,4909.0,9865.0,0.0008,4.0191,2.0,120.0,0.0681,0.0436,-0.0672,5.2753,1.0,1.0
+bioplex-2,co-complex,10801.0,55862.0,0.001,10.3439,6.0,163.0,0.0956,0.0613,-0.1239,4.3308,1.0,1.0

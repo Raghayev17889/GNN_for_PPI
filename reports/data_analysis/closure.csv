@@ -1,0 +1,5 @@
+,triangle_closure,square_closure,mean_common_neighbors,mean_l3_paths,triangle_closure_random,square_closure_random,mean_common_neighbors_random,mean_l3_paths_random,common_neighbors_enrichment,l3_enrichment
+hi-iii,0.4898,0.8715,2.5946,225.6279,0.5625,0.8783,2.9582,148.9515,0.8771,1.5148
+hi-ii-14,0.372,0.8006,1.4924,105.6214,0.4602,0.8104,1.9148,68.8909,0.7794,1.5332
+lit-bm-13,0.2847,0.5234,0.562,6.5545,0.0709,0.325,0.0898,1.0975,6.2573,5.9723
+bioplex-2,0.3785,0.8343,1.5697,53.2952,0.121,0.6803,0.1485,3.7657,10.572,14.1529
