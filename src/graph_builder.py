@@ -5,6 +5,8 @@ Supported inputs
 * **Generic edge lists** (``.tsv``, ``.csv``, ``.txt``) with two protein
   columns and an optional numeric confidence column, e.g. BioGRID or IntAct
   exports reduced to interactor pairs, or the bundled synthetic sample.
+  Files with or without a header row and with any line-ending convention
+  (LF, CRLF or classic-Mac CR) are accepted.
 * **STRING** ``protein.links`` files (space separated, columns ``protein1``,
   ``protein2``, ``combined_score``), optionally gzip-compressed.
 
@@ -63,15 +65,47 @@ def _open_text(path: Path):
     return open(path, encoding="utf-8")
 
 
-def _read_table(path: Path, fmt: EdgeFormat) -> pd.DataFrame:
+def _first_line(path: Path) -> str:
+    """First non-empty line; universal newlines also split on bare CR."""
+    with _open_text(path) as handle:
+        for line in handle:
+            if line.strip():
+                return line.strip()
+    return ""
+
+
+def _is_number(token: str) -> bool:
+    try:
+        float(token)
+    except ValueError:
+        return False
+    return True
+
+
+def _sniff_header(path: Path) -> bool:
+    """Return ``True`` unless every field of the first line is numeric.
+
+    Numeric identifiers (e.g. Entrez gene IDs) in the first row mean the
+    file has no header; pass ``header`` explicitly for symbol-based files
+    without one.
+    """
+    line = _first_line(path)
+    fields = line.split("\t") if "\t" in line else line.replace(",", " ").split()
+    return not (fields and all(_is_number(f.strip()) for f in fields))
+
+
+def _read_table(path: Path, fmt: EdgeFormat, header: bool = True) -> pd.DataFrame:
+    kwargs = {"header": 0 if header else None}
     if fmt == "string":
-        return pd.read_csv(path, sep=r"\s+", engine="python")
+        return pd.read_csv(path, sep=r"\s+", engine="python", **kwargs)
     lowered = path.name.lower()
     if lowered.endswith((".csv", ".csv.gz")):
-        return pd.read_csv(path)
+        return pd.read_csv(path, **kwargs)
     if lowered.endswith((".tsv", ".tsv.gz", ".tab", ".tab.gz")):
-        return pd.read_csv(path, sep="\t")
-    return pd.read_csv(path, sep=r"\s+", engine="python")
+        return pd.read_csv(path, sep="\t", **kwargs)
+    if "\t" in _first_line(path):
+        return pd.read_csv(path, sep="\t", **kwargs)
+    return pd.read_csv(path, sep=r"\s+", engine="python", **kwargs)
 
 
 def clean_edges(
@@ -134,15 +168,21 @@ def clean_edges(
     return edges[STANDARD_COLUMNS]
 
 
-def load_edge_list(
+def read_edge_table(
     path: str | Path,
     fmt: EdgeFormat = "auto",
-    source_col: str | None = None,
-    target_col: str | None = None,
-    weight_col: str | None = None,
-    min_score: float | None = None,
+    header: bool | None = None,
+    source_col: str | int | None = None,
+    target_col: str | int | None = None,
+    weight_col: str | int | None = None,
 ) -> pd.DataFrame:
-    """Read a PPI edge list from disk into a standardised DataFrame.
+    """Read an interaction file *without* cleaning it.
+
+    Returns the raw rows - including self-interactions, duplicates and
+    missing values - with standardised columns ``protein_a``, ``protein_b``
+    and ``weight`` (1.0 when the file has no confidence column). Use
+    :func:`load_edge_list` for a cleaned table, or
+    :mod:`src.preprocessing` for an audited cleaning pipeline.
 
     Parameters
     ----------
@@ -151,16 +191,13 @@ def load_edge_list(
     fmt:
         ``"string"`` for STRING ``protein.links`` files, ``"edgelist"`` for
         anything else, or ``"auto"`` to detect from the file name/header.
+    header:
+        Whether the first line is a header. ``None`` detects it: a first line
+        made only of numbers (e.g. Entrez IDs) is treated as data.
     source_col, target_col, weight_col:
-        Column names. For edge lists they default to the first, second and
-        (if numeric) third columns; for STRING to ``protein1``, ``protein2``
-        and ``combined_score``.
-    min_score:
-        Optional confidence threshold (e.g. 700 for STRING "high confidence").
-
-    Returns
-    -------
-    DataFrame with columns ``protein_a``, ``protein_b``, ``weight``.
+        Column names (or positions for header-less files). For edge lists
+        they default to the first, second and (if numeric) third columns;
+        for STRING to ``protein1``, ``protein2`` and ``combined_score``.
     """
     path = Path(path)
     if not path.exists():
@@ -168,7 +205,9 @@ def load_edge_list(
 
     if fmt == "auto":
         fmt = _detect_format(path)
-    raw = _read_table(path, fmt)
+    if header is None:
+        header = True if fmt == "string" else _sniff_header(path)
+    raw = _read_table(path, fmt, header=header)
 
     if fmt == "string":
         source_col = source_col or "protein1"
@@ -177,13 +216,47 @@ def load_edge_list(
     else:
         if raw.shape[1] < 2:
             raise ValueError(f"Expected at least two columns in {path}, found {raw.shape[1]}")
-        source_col = source_col or raw.columns[0]
-        target_col = target_col or raw.columns[1]
+        source_col = raw.columns[0] if source_col is None else source_col
+        target_col = raw.columns[1] if target_col is None else target_col
         if weight_col is None and raw.shape[1] >= 3 and pd.api.types.is_numeric_dtype(raw.iloc[:, 2]):
             weight_col = raw.columns[2]
 
-    edges = clean_edges(raw, source_col, target_col, weight_col, min_score)
-    logger.info("Loaded %d unique interactions from %s (format=%s)", len(edges), path, fmt)
+    missing = [c for c in (source_col, target_col, weight_col) if c is not None and c not in raw.columns]
+    if missing:
+        raise KeyError(f"Columns not found in {path}: {missing}")
+    table = pd.DataFrame(
+        {
+            "protein_a": raw[source_col],
+            "protein_b": raw[target_col],
+            "weight": pd.to_numeric(raw[weight_col], errors="coerce") if weight_col is not None else 1.0,
+        }
+    )
+    logger.debug("Read %d raw rows from %s (format=%s, header=%s)", len(table), path, fmt, header)
+    return table
+
+
+def load_edge_list(
+    path: str | Path,
+    fmt: EdgeFormat = "auto",
+    source_col: str | int | None = None,
+    target_col: str | int | None = None,
+    weight_col: str | int | None = None,
+    min_score: float | None = None,
+    header: bool | None = None,
+) -> pd.DataFrame:
+    """Read a PPI edge list from disk into a cleaned, standardised DataFrame.
+
+    Equivalent to :func:`read_edge_table` followed by :func:`clean_edges`;
+    see those functions for the parameters. ``min_score`` is an optional
+    confidence threshold (e.g. 700 for STRING "high confidence").
+
+    Returns
+    -------
+    DataFrame with columns ``protein_a``, ``protein_b``, ``weight``.
+    """
+    raw = read_edge_table(path, fmt, header, source_col, target_col, weight_col)
+    edges = clean_edges(raw, "protein_a", "protein_b", "weight", min_score)
+    logger.info("Loaded %d unique interactions from %s", len(edges), path)
     return edges
 
 

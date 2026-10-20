@@ -14,6 +14,7 @@ from src.graph_builder import (
     load_edge_list,
     load_graph,
     make_link_prediction_split,
+    read_edge_table,
     sample_holdout_edges,
     sample_negative_pairs,
 )
@@ -181,3 +182,36 @@ def test_holdout_refuses_to_disconnect_a_tree():
 def test_unknown_negative_strategy(karate_graph):
     with pytest.raises(ValueError):
         sample_negative_pairs(karate_graph, 5, np.random.default_rng(0), strategy="nearby")
+
+
+# ---------------------------------------------------------------------------
+# Header detection and line endings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_headerless_numeric_file_with_any_line_ending(tmp_path, newline):
+    path = tmp_path / "interactome.txt"
+    path.write_bytes(newline.join(["14\t64782\t1", "27\t9322\t1", "60\t60\t1", "9322\t27\t1"]).encode())
+    raw = read_edge_table(path)
+    assert len(raw) == 4  # the first interaction is data, not a header
+    assert raw.loc[0, ["protein_a", "protein_b"]].tolist() == [14, 64782]
+    edges = load_edge_list(path)
+    assert _as_set(zip(edges.protein_a, edges.protein_b)) == {frozenset(("14", "64782")), frozenset(("27", "9322"))}
+
+
+def test_explicit_header_flag(tmp_path):
+    path = tmp_path / "symbols.tsv"
+    path.write_text("TP53\tMDM2\nBRCA1\tBARD1\n")
+    assert len(load_edge_list(path)) == 1  # sniffed as a header row
+    assert len(load_edge_list(path, header=False)) == 2
+
+
+def test_read_edge_table_keeps_raw_rows(tmp_path):
+    path = tmp_path / "raw.tsv"
+    path.write_text("a\tb\nA\tA\nA\tB\nB\tA\n")
+    raw = read_edge_table(path)
+    assert len(raw) == 3
+    assert raw["weight"].eq(1.0).all()
+    with pytest.raises(KeyError):
+        read_edge_table(path, source_col="missing")
