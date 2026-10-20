@@ -24,5 +24,13 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run tests
         run: pytest
-      - name: Smoke-test the pipeline on the bundled sample
-        run: python src/model.py --cv-folds 2 --betweenness-samples 200 --importance-repeats 2 --top-novel 10 --output-dir results/ci
+      - name: Smoke-test the pipeline on the bundled synthetic sample
+        run: >
+          python src/model.py --input data/raw/sample_ppi_edges.tsv --cv-folds 2
+          --betweenness-samples 200 --importance-repeats 2 --top-novel 10 --output-dir results/ci-synthetic
+      - name: Download, preprocess and model a real interactome (HI-III)
+        run: |
+          python src/datasets.py download hi-iii genes-human
+          python src/preprocessing.py --dataset hi-iii
+          python src/model.py --dataset hi-iii --cv-folds 2 --betweenness-samples 200 \
+            --importance-repeats 2 --top-novel 10 --output-dir results/ci-hi-iii
