@@ -1,7 +1,8 @@
 {
   "config": {
+    "dataset": null,
     "input_path": "data/raw/sample_ppi_edges.tsv",
-    "output_dir": "reports",
+    "output_dir": "reports/synthetic_sample",
     "fmt": "auto",
     "source_col": null,
     "target_col": null,
@@ -18,13 +19,14 @@
       "gradient_boosting"
     ],
     "cv_folds": 5,
-    "betweenness_samples": null,
+    "betweenness_samples": "auto",
     "max_path_length": 6,
     "top_novel": 100,
     "importance_repeats": 10,
     "seed": 42,
     "save_models": true
   },
+  "input": "data/raw/sample_ppi_edges.tsv",
   "graph_summary": {
     "proteins": 2000,
     "interactions": 7518,
@@ -249,10 +251,10 @@
     }
   ],
   "figures": {
-    "roc_curves": "reports/figures/roc_curves.png",
-    "pr_curves": "reports/figures/pr_curves.png",
-    "confusion_matrix": "reports/figures/confusion_matrix.png",
-    "feature_importance": "reports/figures/feature_importance.png"
+    "roc_curves": "reports/synthetic_sample/figures/roc_curves.png",
+    "pr_curves": "reports/synthetic_sample/figures/pr_curves.png",
+    "confusion_matrix": "reports/synthetic_sample/figures/confusion_matrix.png",
+    "feature_importance": "reports/synthetic_sample/figures/feature_importance.png"
   },
-  "runtime_seconds": 53.8
+  "runtime_seconds": 173.4
 }

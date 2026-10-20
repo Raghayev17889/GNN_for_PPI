@@ -16,8 +16,8 @@ env/
 
 # Pipeline outputs (regenerate with `python src/model.py`)
 results/
-reports/models/
-reports/predictions.csv
+reports/**/models/
+reports/**/predictions.csv
 *.joblib
 
 # Large / external datasets (keep the bundled sample in data/raw/)
