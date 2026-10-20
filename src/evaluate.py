@@ -110,6 +110,8 @@ DISPLAY_NAMES = {
     "resource_allocation": "Resource allocation",
     "preferential_attachment": "Preferential attachment",
     "shortest_path": "Shortest path (inverted)",
+    "roc_auc": "ROC-AUC",
+    "average_precision": "Average precision",
 }
 
 #: Feature columns usable directly as unsupervised ranking scores, with the
