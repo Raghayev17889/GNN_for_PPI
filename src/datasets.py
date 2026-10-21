@@ -2,7 +2,9 @@
 
 The interactome files are the Entrez-gene-ID networks distributed with
 Kovacs et al. (2019), the paper that introduced the L3 link-prediction
-principle; gene annotation comes from an NCBI Entrez Gene snapshot. Every
+principle; gene annotation comes from an NCBI Entrez Gene snapshot, and
+functional annotation (Gene Ontology, pathways, tissue expression) from the
+Hetionet v1.0 knowledge graph, which also uses Entrez gene IDs. Every
 URL is pinned to a fixed commit and every file is verified against a SHA-256
 checksum, so downloads are reproducible.
 
@@ -10,6 +12,7 @@ Usage::
 
     python src/datasets.py list
     python src/datasets.py download hi-iii genes-human
+    python src/datasets.py download hetionet-nodes hetionet-edges
     python src/datasets.py download --all
 """
 
@@ -39,6 +42,11 @@ _L3_COMMIT = "ed6b18f281521759bd70c323b802559fba81e789"
 _L3_BASE = f"https://raw.githubusercontent.com/kpisti/L3/{_L3_COMMIT}/"
 _GENES_COMMIT = "a7362748a34211e5df6f2d185bb3246279760546"
 _GENES_BASE = f"https://raw.githubusercontent.com/dhimmel/entrez-gene/{_GENES_COMMIT}/data/"
+_HETIONET_COMMIT = "8a6cc0c5604d0e2908786e4de38af67b8e46ee4a"
+_HETIONET_RAW = f"https://raw.githubusercontent.com/hetio/hetionet/{_HETIONET_COMMIT}/hetnet/tsv/"
+# The edge file is stored with Git LFS and served from GitHub's media host.
+_HETIONET_LFS = f"https://media.githubusercontent.com/media/hetio/hetionet/{_HETIONET_COMMIT}/hetnet/tsv/"
+_HETIONET = "Himmelstein et al., eLife 6, e26726 (2017); github.com/hetio/hetionet (CC0)"
 _KOVACS_2019 = "Kovacs et al., Nature Communications 10, 1240 (2019); github.com/kpisti/L3"
 
 
@@ -130,6 +138,24 @@ DATASETS: dict[str, Dataset] = {
             "annotation",
             "NCBI Entrez Gene human gene information (symbol, gene type, chromosome), 2016 snapshot",
             "NCBI Gene; processed by D. Himmelstein, github.com/dhimmel/entrez-gene (CC0)",
+        ),
+        Dataset(
+            "hetionet-nodes",
+            "hetionet-v1.0-nodes.tsv",
+            _HETIONET_RAW + "hetionet-v1.0-nodes.tsv",
+            "3ad9eb86c031df8bc7d5efefa6edc93562182eb9a6a71e5129d3f18b9d42c50e",
+            "annotation",
+            "Hetionet v1.0 nodes: names of genes, GO terms, pathways and anatomical structures",
+            _HETIONET,
+        ),
+        Dataset(
+            "hetionet-edges",
+            "hetionet-v1.0-edges.sif.gz",
+            _HETIONET_LFS + "hetionet-v1.0-edges.sif.gz",
+            "611f0411ac666be4e0270e54bbca67407e14720bfc3099311f0f5eec25c5a947",
+            "annotation",
+            "Hetionet v1.0 edges: gene-GO, gene-pathway and tissue-expresses-gene relations",
+            _HETIONET,
         ),
     )
 }

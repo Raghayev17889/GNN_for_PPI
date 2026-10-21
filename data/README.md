@@ -59,6 +59,28 @@ The processed TSV has the columns `protein_a`, `protein_b`, `weight`, `symbol_a`
 The interaction data belongs to its original authors. Please cite the original
 publications (see the table above and the README) when using them.
 
+## Functional annotation (GNN node features)
+
+The graph neural network's biological node features and the enrichment analyses in
+notebook 04 use [Hetionet v1.0](https://github.com/hetio/hetionet) (Himmelstein et al.,
+*eLife* 2017, CC0), which integrates several annotation resources under Entrez gene IDs, the
+identifiers of the interactome files. Both files are commit-pinned and checksum-verified
+(`hetionet-nodes`, 2.5 MB; `hetionet-edges`, 12 MB).
+
+| source | Hetionet relation | terms | HI-III proteins covered |
+|---|---|---:|---:|
+| GO biological process | Gene–participates–BiologicalProcess (`GpBP`) | 11,381 | 77% |
+| GO cellular component | Gene–participates–CellularComponent (`GpCC`) | 1,391 | 58% |
+| Pathways (Reactome, WikiPathways, PID) | Gene–participates–Pathway (`GpPW`) | 1,822 | 46% |
+| Tissue expression (Bgee, TISSUES) | Anatomy–expresses–Gene (`AeG`) | 241 | 98% |
+
+GO molecular function is not used: its most frequent term, *protein binding*, is
+annotated from interaction experiments and would leak interactions into the features.
+
+```bash
+python src/datasets.py download hetionet-nodes hetionet-edges
+```
+
 ## Other real data
 
 **STRING** (<https://string-db.org/cgi/download>): download
