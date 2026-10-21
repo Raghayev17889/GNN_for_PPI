@@ -156,3 +156,36 @@ def test_config_validation():
     model = LinkPredictor(4, GNNConfig(**FAST))
     assert sum(p.numel() for p in model.parameters()) > 0
 
+
+def test_hybrid_uses_pair_heuristics(split, small_ppi_graph, tmp_path):
+    features = NodeFeatures.from_graph(small_ppi_graph, "structural")
+    hybrid = train_link_predictor(split, features, GNNConfig(pair_heuristics=True, seed=0, **FAST))
+    assert hybrid.model.decoder.n_pair_features == 3 and hybrid.pair_mean.shape == (3,)
+    scores = hybrid.predict_proba(split.test_graph, split.test_pairs)
+    assert roc_auc_score(split.test_labels, scores) > 0.65
+    loaded = TrainedGNN.load(hybrid.save(tmp_path / "hybrid.pt"))
+    np.testing.assert_allclose(loaded.predict_proba(split.test_graph, split.test_pairs), scores, rtol=1e-5)
+    # Exhaustive ranking agrees with pairwise scoring, including the pair heuristics.
+    table = rank_novel_interactions(hybrid, small_ppi_graph, top_k=10, block_size=13)
+    nodes = hybrid.nodes
+    candidates = [(nodes[i], nodes[j]) for i in range(len(nodes)) for j in range(i + 1, len(nodes))
+                  if not small_ppi_graph.has_edge(nodes[i], nodes[j])]
+    best = np.sort(hybrid.predict_proba(small_ppi_graph, candidates))[::-1][:10]
+    np.testing.assert_allclose(table["probability"].to_numpy(), best, rtol=1e-4)
+
+
+def test_hybrid_decoder_requires_pair_features():
+    decoder = PairDecoder(4, 8, n_pair_features=3)
+    with pytest.raises(ValueError):
+        decoder(torch.randn(3, 4), torch.tensor([[0], [1]]))
+
+
+def test_block_pair_heuristics_match_pairwise(small_ppi_graph):
+    from src.gnn_model import block_pair_heuristics, pair_heuristic_features
+
+    nodes = sorted(small_ppi_graph, key=str)
+    adjacency = adjacency_matrix(small_ppi_graph, nodes)
+    rows = np.array([0, 5, 17])
+    block = block_pair_heuristics(adjacency, rows)
+    pairs = np.array([[r for r in rows for _ in range(len(nodes))], [c for _ in rows for c in range(len(nodes))]])
+    np.testing.assert_allclose(block.reshape(-1, 3), pair_heuristic_features(adjacency, pairs), atol=1e-9)

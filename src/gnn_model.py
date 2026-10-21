@@ -29,6 +29,16 @@ product only rewards *similar* embeddings, which is how triadic closure
 rather than similar (Kovacs et al., 2019), and the element-wise features let
 the MLP learn either pattern.
 
+**Pair heuristics (optional hybrid)** - with ``pair_heuristics=True`` the
+decoder also receives three pair-level path counts, computed on the same
+message-passing graph: L3, common neighbours and resource allocation. A GNN
+that embeds proteins one at a time cannot count the paths *between* two
+specific proteins (two proteins with identical neighbourhoods get identical
+embeddings however they are connected; Zhang et al., NeurIPS 2021), and that
+count is exactly what separates true interactions from hard negatives a few
+steps apart. The hybrid keeps the learned embeddings and adds the missing
+pair-level signal.
+
 Training protocol (no leakage)
 ------------------------------
 The GNN is trained and evaluated on the same
@@ -67,6 +77,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from torch import nn
 from torch_geometric.nn import GCNConv, SAGEConv
 
+from src.feature_extractor import pairwise_heuristics
 from src.graph_builder import LinkPredictionSplit
 from src.node_features import FeatureKind, NodeFeatures, adjacency_matrix
 
@@ -75,6 +86,8 @@ logger = logging.getLogger(__name__)
 Architecture = Literal["graphsage", "gcn", "mlp"]
 GNN_ARCHITECTURES: tuple[str, ...] = ("graphsage", "gcn", "mlp")
 DISPLAY_NAMES = {"graphsage": "GraphSAGE", "gcn": "GCN", "mlp": "MLP (no message passing)"}
+#: Pair-level scores given to the decoder when ``pair_heuristics=True``.
+PAIR_HEURISTICS: tuple[str, ...] = ("l3", "common_neighbors", "resource_allocation")
 
 
 @dataclass
@@ -100,6 +113,7 @@ class GNNConfig:
     negative_strategy: Literal["uniform", "local"] = "uniform"
     validation_fraction: float = 0.2
     n_components: int = 32
+    pair_heuristics: bool = False
     seed: int = 42
 
     def __post_init__(self) -> None:
@@ -156,10 +170,11 @@ class Encoder(nn.Module):
 class PairDecoder(nn.Module):
     """Symmetric MLP scoring a protein pair from its two embeddings."""
 
-    def __init__(self, embedding_dim: int, hidden: int = 64, dropout: float = 0.3) -> None:
+    def __init__(self, embedding_dim: int, hidden: int = 64, dropout: float = 0.3, n_pair_features: int = 0) -> None:
         super().__init__()
+        self.n_pair_features = n_pair_features
         self.mlp = nn.Sequential(
-            nn.Linear(2 * embedding_dim, hidden),
+            nn.Linear(2 * embedding_dim + n_pair_features, hidden),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden, 1),
@@ -169,9 +184,18 @@ class PairDecoder(nn.Module):
     def pair_features(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.cat([a * b, (a - b).abs()], dim=-1)
 
-    def forward(self, h: torch.Tensor, pairs: torch.Tensor) -> torch.Tensor:
-        """Interaction logits for ``pairs`` (a ``2 x P`` index tensor)."""
-        return self.mlp(self.pair_features(h[pairs[0]], h[pairs[1]])).squeeze(-1)
+    def forward(self, h: torch.Tensor, pairs: torch.Tensor, pair_x: torch.Tensor | None = None) -> torch.Tensor:
+        """Interaction logits for ``pairs`` (a ``2 x P`` index tensor).
+
+        ``pair_x`` holds the ``P x n_pair_features`` pair heuristics of the
+        hybrid model and is ignored otherwise.
+        """
+        z = self.pair_features(h[pairs[0]], h[pairs[1]])
+        if self.n_pair_features:
+            if pair_x is None:
+                raise ValueError("this decoder needs pair heuristics")
+            z = torch.cat([z, pair_x], dim=-1)
+        return self.mlp(z).squeeze(-1)
 
 
 class LinkPredictor(nn.Module):
@@ -182,10 +206,17 @@ class LinkPredictor(nn.Module):
         self.encoder = Encoder(
             in_channels, config.hidden_channels, config.embedding_dim, config.architecture, config.dropout
         )
-        self.decoder = PairDecoder(config.embedding_dim, config.decoder_hidden, config.dropout)
+        self.decoder = PairDecoder(
+            config.embedding_dim,
+            config.decoder_hidden,
+            config.dropout,
+            len(PAIR_HEURISTICS) if config.pair_heuristics else 0,
+        )
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, pairs: torch.Tensor) -> torch.Tensor:
-        return self.decoder(self.encoder(x, edge_index), pairs)
+    def forward(
+        self, x: torch.Tensor, edge_index: torch.Tensor, pairs: torch.Tensor, pair_x: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return self.decoder(self.encoder(x, edge_index), pairs, pair_x)
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +255,27 @@ def pairs_to_index(pairs: Sequence[tuple[Hashable, Hashable]], index: dict) -> n
         return np.array([[index[u] for u, _ in pairs], [index[v] for _, v in pairs]], dtype=np.int64).reshape(2, -1)
     except KeyError as exc:
         raise KeyError(f"Protein {exc.args[0]!r} is not in the model's node set") from None
+
+
+def pair_heuristic_features(adjacency: sparse.csr_array, pairs: np.ndarray) -> np.ndarray:
+    """``log1p`` of the :data:`PAIR_HEURISTICS` for a ``2 x P`` pair array."""
+    if pairs.shape[1] == 0:
+        return np.zeros((0, len(PAIR_HEURISTICS)))
+    scores = pairwise_heuristics(adjacency, pairs[0], pairs[1])
+    return np.log1p(np.column_stack([scores[name] for name in PAIR_HEURISTICS]))
+
+
+def block_pair_heuristics(adjacency: sparse.csr_array, rows: np.ndarray) -> np.ndarray:
+    """Pair heuristics of ``rows`` against every node: a ``len(rows) x n x 3`` array."""
+    adjacency = sparse.csr_array(adjacency, dtype=float)
+    degree = np.asarray(adjacency.sum(axis=1)).ravel()
+    inv_degree = sparse.diags_array(np.where(degree > 0, 1.0 / np.maximum(degree, 1), 0.0))
+    inv_sqrt = sparse.diags_array(np.where(degree > 0, 1.0 / np.sqrt(np.maximum(degree, 1)), 0.0))
+    block = adjacency[rows]
+    common = (block @ adjacency).toarray()
+    resource = (block @ inv_degree @ adjacency).toarray()
+    l3 = (block @ (inv_sqrt @ adjacency @ inv_sqrt) @ adjacency).toarray()
+    return np.log1p(np.stack([l3, common, resource], axis=-1))
 
 
 def sample_uniform_negatives(
@@ -284,6 +336,8 @@ class TrainedGNN:
     best_epoch: int = 0
     validation_average_precision: float = float("nan")
     training_seconds: float = 0.0
+    pair_mean: np.ndarray | None = None
+    pair_scale: np.ndarray | None = None
 
     @property
     def name(self) -> str:
@@ -305,6 +359,13 @@ class TrainedGNN:
         x = torch.from_numpy(self.features.transform(adjacency))
         return x, edge_index_from_adjacency(adjacency)
 
+    def pair_inputs(self, adjacency: sparse.csr_array, pairs: np.ndarray) -> torch.Tensor | None:
+        """Standardised pair heuristics (``None`` unless the model is a hybrid)."""
+        if not self.config.pair_heuristics:
+            return None
+        values = (pair_heuristic_features(adjacency, pairs) - self.pair_mean) / self.pair_scale
+        return torch.from_numpy(values.astype(np.float32))
+
     @torch.no_grad()
     def embed(self, graph: nx.Graph) -> pd.DataFrame:
         """Protein embeddings (one row per protein) with messages passed over ``graph``."""
@@ -324,8 +385,12 @@ class TrainedGNN:
         """
         self.model.eval()
         h = self.model.encoder(*self._inputs(graph))
-        index = torch.from_numpy(pairs_to_index(list(pairs), self.index))
-        logits = [self.model.decoder(h, index[:, i : i + batch_size]) for i in range(0, index.shape[1], batch_size)]
+        index = pairs_to_index(list(pairs), self.index)
+        adjacency = adjacency_matrix(graph, self.nodes) if self.config.pair_heuristics else None
+        logits = []
+        for i in range(0, index.shape[1], batch_size):
+            chunk = index[:, i : i + batch_size]
+            logits.append(self.model.decoder(h, torch.from_numpy(chunk), self.pair_inputs(adjacency, chunk)))
         return torch.sigmoid(torch.cat(logits)).numpy() if logits else np.empty(0)
 
     def save(self, path: str | Path) -> Path:
@@ -347,6 +412,8 @@ class TrainedGNN:
                 "best_epoch": self.best_epoch,
                 "validation_average_precision": self.validation_average_precision,
                 "training_seconds": self.training_seconds,
+                "pair_mean": None if self.pair_mean is None else torch.from_numpy(self.pair_mean),
+                "pair_scale": None if self.pair_scale is None else torch.from_numpy(self.pair_scale),
             },
             path,
         )
@@ -377,6 +444,8 @@ class TrainedGNN:
             state["best_epoch"],
             state["validation_average_precision"],
             state["training_seconds"],
+            None if state.get("pair_mean") is None else state["pair_mean"].numpy(),
+            None if state.get("pair_scale") is None else state["pair_scale"].numpy(),
         )
 
 
@@ -437,6 +506,20 @@ def train_link_predictor(
     x_train = torch.from_numpy(features.transform(train_adjacency))
     edge_index_train = edge_index_from_adjacency(train_adjacency)
 
+    pair_mean = pair_scale = None
+    if config.pair_heuristics:
+        reference = pair_heuristic_features(train_adjacency, pairs)
+        pair_mean, std = reference.mean(axis=0), reference.std(axis=0)
+        pair_scale = np.where(std > 0, std, 1.0)
+
+    def pair_inputs(adjacency: sparse.csr_array, batch: np.ndarray) -> torch.Tensor | None:
+        if not config.pair_heuristics:
+            return None
+        values = (pair_heuristic_features(adjacency, batch) - pair_mean) / pair_scale
+        return torch.from_numpy(values.astype(np.float32))
+
+    val_pair_x = pair_inputs(train_adjacency, pairs[:, validation])
+
     model = LinkPredictor(x_train.shape[1], config)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     loss_fn = nn.BCEWithLogitsLoss()
@@ -464,18 +547,18 @@ def train_link_predictor(
             )
         else:
             sampled = sample_uniform_negatives(n, n_new, known, rng)
-        batch = torch.from_numpy(np.hstack([positives, fit_neg, sampled]))
+        batch = np.hstack([positives, fit_neg, sampled])
         target = torch.cat([torch.ones(positives.shape[1]), torch.zeros(batch.shape[1] - positives.shape[1])])
 
         optimizer.zero_grad()
-        loss = loss_fn(model(x, edge_index, batch), target)
+        loss = loss_fn(model(x, edge_index, torch.from_numpy(batch), pair_inputs(messages, batch)), target)
         loss.backward()
         optimizer.step()
 
         if epoch % config.eval_every == 0 or epoch == config.epochs:
             model.eval()
             with torch.no_grad():
-                scores = torch.sigmoid(model(x_train, edge_index_train, val_pairs)).numpy()
+                scores = torch.sigmoid(model(x_train, edge_index_train, val_pairs, val_pair_x)).numpy()
             val_ap = float(average_precision_score(val_labels, scores))
             val_auc = float(roc_auc_score(val_labels, scores))
             history.append({"epoch": epoch, "loss": loss.item(), "val_average_precision": val_ap, "val_roc_auc": val_auc})
@@ -495,7 +578,9 @@ def train_link_predictor(
         "Trained %s (%s features): best validation AP %.3f at epoch %d (%.0fs)",
         DISPLAY_NAMES[config.architecture], features.kind, best_ap, best_epoch, seconds,
     )
-    return TrainedGNN(model, config, features, pd.DataFrame(history), best_epoch, best_ap, seconds)
+    return TrainedGNN(
+        model, config, features, pd.DataFrame(history), best_epoch, best_ap, seconds, pair_mean, pair_scale
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +615,11 @@ def rank_novel_interactions(
         rows = torch.arange(start, min(start + block_size, n))
         a = h[rows].unsqueeze(1).expand(-1, n, -1)
         b = h.unsqueeze(0).expand(rows.numel(), -1, -1)
-        logits = decoder.mlp(decoder.pair_features(a, b)).squeeze(-1)
+        z = decoder.pair_features(a, b)
+        if trained.config.pair_heuristics:
+            heuristics = (block_pair_heuristics(adjacency, rows.numpy()) - trained.pair_mean) / trained.pair_scale
+            z = torch.cat([z, torch.from_numpy(heuristics.astype(np.float32))], dim=-1)
+        logits = decoder.mlp(z).squeeze(-1)
         invalid = columns.unsqueeze(0) <= rows.unsqueeze(1)  # each pair once, no self-pairs
         observed = torch.from_numpy(adjacency[start : start + rows.numel()].toarray() > 0)
         logits = logits.masked_fill(invalid | observed, -torch.inf)

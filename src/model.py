@@ -342,6 +342,7 @@ class PipelineConfig:
     gnn_models: tuple[str, ...] = ("graphsage",)
     gnn_features: str = "auto"
     gnn_epochs: int = 300
+    gnn_pair_heuristics: bool = False
     cv_folds: int = 5
     betweenness_samples: int | str | None = "auto"
     max_path_length: int = 6
@@ -414,6 +415,7 @@ def train_gnns(graph: nx.Graph, split: LinkPredictionSplit, config: PipelineConf
             features=kind,
             epochs=config.gnn_epochs,
             negative_strategy=config.negative_strategy,
+            pair_heuristics=config.gnn_pair_heuristics,
             seed=config.seed,
         )
         trained[name] = train_link_predictor(split, features, gnn_config)
@@ -648,6 +650,10 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
     )
     model.add_argument("--gnn-epochs", type=int, default=300)
     model.add_argument(
+        "--gnn-pair-heuristics", action="store_true",
+        help="hybrid GNN: also give the decoder L3, common-neighbour and resource-allocation scores",
+    )
+    model.add_argument(
         "--betweenness-samples",
         type=_betweenness_arg,
         default="auto",
@@ -687,6 +693,7 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
         gnn_models=tuple(args.gnn),
         gnn_features=args.gnn_features,
         gnn_epochs=args.gnn_epochs,
+        gnn_pair_heuristics=args.gnn_pair_heuristics,
         cv_folds=args.cv_folds,
         betweenness_samples=args.betweenness_samples,
         max_path_length=args.max_path_length,
