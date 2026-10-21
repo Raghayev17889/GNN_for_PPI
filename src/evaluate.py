@@ -103,6 +103,9 @@ DISPLAY_NAMES = {
     "logistic_regression": "Logistic regression",
     "random_forest": "Random forest",
     "gradient_boosting": "Gradient boosting",
+    "graphsage": "GraphSAGE (GNN)",
+    "gcn": "GCN (GNN)",
+    "mlp": "MLP on node features",
     "l3": "L3 paths",
     "common_neighbors": "Common neighbours",
     "jaccard": "Jaccard",
@@ -235,7 +238,8 @@ def evaluate_scores(
     Returns
     -------
     DataFrame indexed by method, with a ``kind`` column (``model`` or
-    ``heuristic``), sorted by ROC-AUC. Threshold metrics are NaN for
+    ``heuristic``; the pipeline relabels graph neural networks ``gnn``),
+    sorted by ROC-AUC. Threshold metrics are NaN for
     heuristics.
     """
     rows = []
@@ -281,7 +285,7 @@ def _series_styles(names: list[str], kinds: Mapping[str, str]) -> dict[str, dict
     return {
         name: {
             "color": PALETTE[i % len(PALETTE)],
-            "linestyle": "-" if kinds.get(name, "model") == "model" else (0, (5, 2)),
+            "linestyle": (0, (5, 2)) if kinds.get(name, "model") == "heuristic" else "-",
         }
         for i, name in enumerate(names)
     }

@@ -1,8 +1,15 @@
-"""Supervised classifiers for protein-protein interaction prediction.
+"""Supervised models for protein-protein interaction prediction.
 
-Each candidate protein pair is represented by the topological feature vector
-from :mod:`src.feature_extractor`; a binary classifier learns to separate
-hidden true interactions from non-interacting pairs.
+Two families of models are trained on the same leakage-free split and scored
+on the same held-out pairs:
+
+* **classical** - each candidate protein pair is represented by the
+  topological feature vector from :mod:`src.feature_extractor`; a binary
+  classifier learns to separate hidden true interactions from
+  non-interacting pairs;
+* **graph neural networks** - GraphSAGE / GCN encoders learn protein
+  embeddings from node features and message passing over the interactome
+  (:mod:`src.gnn_model`).
 
 Pipeline (``python src/model.py``)
 ----------------------------------
@@ -11,15 +18,17 @@ Pipeline (``python src/model.py``)
    any edge list passed with ``--input``.
 2. Hide interactions and sample non-interacting pairs (leakage-free split).
 3. Featurise train/test pairs on their own feature graphs.
-4. Cross-validate and fit the classifiers.
+4. Cross-validate and fit the classifiers; train the GNN(s).
 5. Score held-out pairs; compare against unsupervised heuristics
    (:mod:`src.evaluate`).
-6. Rank currently unobserved protein pairs as candidate novel interactions.
+6. Rank currently unobserved protein pairs as candidate novel interactions
+   (best classical model and each GNN).
 7. Write metrics, predictions, figures and fitted models to ``--output-dir``.
 
 Examples::
 
     python src/model.py                                   # HI-III human interactome
+    python src/model.py --gnn graphsage gcn --gnn-features structural
     python src/model.py --dataset bioplex-2 --negatives local
     python src/model.py --input data/raw/sample_ppi_edges.tsv   # synthetic sample
     python src/model.py --input data/external/9606.protein.links.v12.0.txt.gz \
@@ -85,6 +94,7 @@ DEFAULT_OUTPUT = ROOT / "results"
 AUTO_BETWEENNESS_NODES = 3000
 AUTO_BETWEENNESS_SAMPLES = 1000
 MODEL_NAMES: tuple[str, ...] = ("logistic_regression", "random_forest", "gradient_boosting")
+GNN_NAMES: tuple[str, ...] = ("graphsage", "gcn", "mlp")
 #: Heuristics drawn next to the models in ROC / PR figures (all are tabulated).
 PLOT_BASELINES: tuple[str, ...] = ("l3", "common_neighbors", "preferential_attachment")
 
@@ -329,6 +339,9 @@ class PipelineConfig:
     negative_ratio: float = 1.0
     negative_strategy: str = "uniform"
     models: tuple[str, ...] = MODEL_NAMES
+    gnn_models: tuple[str, ...] = ("graphsage",)
+    gnn_features: str = "auto"
+    gnn_epochs: int = 300
     cv_folds: int = 5
     betweenness_samples: int | str | None = "auto"
     max_path_length: int = 6
@@ -344,6 +357,13 @@ class PipelineConfig:
         if self.dataset is None:
             raise ValueError("Set either input_path or dataset")
         return processed_path(self.dataset)
+
+    def resolve_gnn_features(self) -> str:
+        """``"auto"``: biological + structural features for registry interactomes
+        (Entrez gene IDs, which the annotation uses), structural only otherwise."""
+        if self.gnn_features != "auto":
+            return self.gnn_features
+        return "both" if self.input_path is None else "structural"
 
     def extractor(self, n_proteins: int = 0) -> TopologicalFeatureExtractor:
         return TopologicalFeatureExtractor(
@@ -369,6 +389,35 @@ def build_feature_matrices(
         time.perf_counter() - start,
     )
     return X_train, X_test
+
+
+def train_gnns(graph: nx.Graph, split: LinkPredictionSplit, config: PipelineConfig) -> dict:
+    """Train every GNN in ``config.gnn_models`` on ``split``.
+
+    PyTorch is imported here, so the classical pipeline does not pay for it
+    when no GNN is requested.
+    """
+    from src.gnn_model import GNNConfig, train_link_predictor
+    from src.node_features import NodeFeatures
+
+    kind = config.resolve_gnn_features()
+    annotations = None
+    if kind != "structural":
+        from src.annotations import load_annotations
+
+        annotations = load_annotations()
+    trained = {}
+    for name in config.gnn_models:
+        features = NodeFeatures.from_graph(graph, kind, annotations, seed=config.seed)
+        gnn_config = GNNConfig(
+            architecture=name,
+            features=kind,
+            epochs=config.gnn_epochs,
+            negative_strategy=config.negative_strategy,
+            seed=config.seed,
+        )
+        trained[name] = train_link_predictor(split, features, gnn_config)
+    return trained
 
 
 def run_pipeline(config: PipelineConfig) -> dict:
@@ -418,14 +467,20 @@ def run_pipeline(config: PipelineConfig) -> dict:
 
     # 4. Train
     models = train_models(X_train, split.train_labels, config.models, config.seed, config.cv_folds)
+    gnns = train_gnns(graph, split, config) if config.gnn_models else {}
 
-    # 5. Evaluate on held-out interactions
+    # 5. Evaluate on held-out interactions (GNN messages pass over test_graph)
     model_scores = {name: m.predict_proba(X_test) for name, m in models.items()}
+    gnn_scores = {name: g.predict_proba(split.test_graph, split.test_pairs) for name, g in gnns.items()}
     baseline_scores = heuristic_scores(X_test)
-    metrics = evaluate_scores(y_test, model_scores, baseline_scores)
+    metrics = evaluate_scores(y_test, {**model_scores, **gnn_scores}, baseline_scores)
+    metrics.loc[list(gnn_scores), "kind"] = "gnn"
     for name, model in models.items():
         for key, value in model.cv_scores.items():
             metrics.loc[name, key] = value
+    for name, gnn in gnns.items():
+        metrics.loc[name, "validation_average_precision"] = gnn.validation_average_precision
+    # Feature importance and the classical novel-interaction ranking use the best classical model.
     best = str(metrics[metrics["kind"] == "model"]["roc_auc"].idxmax())
     logger.info(
         "Held-out performance (%s negatives):\n%s",
@@ -437,8 +492,16 @@ def run_pipeline(config: PipelineConfig) -> dict:
         models[best].estimator, X_test, y_test, n_repeats=config.importance_repeats, seed=config.seed
     )
 
-    kinds = {**{n: "model" for n in model_scores}, **{n: "heuristic" for n in baseline_scores}}
-    plotted = {**model_scores, **{n: baseline_scores[n] for n in PLOT_BASELINES if n in baseline_scores}}
+    kinds = {
+        **{n: "model" for n in model_scores},
+        **{n: "gnn" for n in gnn_scores},
+        **{n: "heuristic" for n in baseline_scores},
+    }
+    plotted = {
+        **gnn_scores,
+        **model_scores,
+        **{n: baseline_scores[n] for n in PLOT_BASELINES if n in baseline_scores},
+    }
     figures = {
         "roc_curves": save_figure(plot_roc_curves(y_test, plotted, kinds), figures_dir / "roc_curves.png"),
         "pr_curves": save_figure(plot_pr_curves(y_test, plotted, kinds), figures_dir / "pr_curves.png"),
@@ -466,6 +529,13 @@ def run_pipeline(config: PipelineConfig) -> dict:
         )
         novel.to_csv(output_dir / "novel_predictions.csv", index=False)
         logger.info("Top predicted novel interaction: %s", novel.iloc[0].to_dict() if len(novel) else None)
+        if gnns:
+            from src.gnn_model import rank_novel_interactions as rank_gnn
+
+            for name, gnn in gnns.items():
+                rank_gnn(gnn, graph, top_k=config.top_novel, symbols=symbols).to_csv(
+                    output_dir / f"novel_predictions_{name}.csv", index=False
+                )
 
     # 7. Artifacts
     predictions = pd.DataFrame(
@@ -474,6 +544,7 @@ def run_pipeline(config: PipelineConfig) -> dict:
             "protein_b": [v for _, v in split.test_pairs],
             "label": y_test,
             **{f"model__{n}": s for n, s in model_scores.items()},
+            **{f"model__{n}": s for n, s in gnn_scores.items()},
             **{f"heuristic__{n}": s for n, s in baseline_scores.items()},
         }
     )
@@ -483,6 +554,10 @@ def run_pipeline(config: PipelineConfig) -> dict:
     if config.save_models:
         for name, model in models.items():
             save_model(model, output_dir / "models" / f"{name}.joblib")
+        for name, gnn in gnns.items():
+            gnn.save(output_dir / "models" / f"{name}.pt")
+    for name, gnn in gnns.items():
+        gnn.history.to_csv(output_dir / f"gnn_training_{name}.csv", index=False)
 
     results = {
         "config": {k: (_portable_path(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()},
@@ -490,6 +565,16 @@ def run_pipeline(config: PipelineConfig) -> dict:
         "graph_summary": summary,
         "split": split.summary(),
         "best_model": best,
+        "gnn": {
+            name: {
+                "node_features": gnn.features.kind,
+                "n_node_features": len(gnn.features.names),
+                "best_epoch": gnn.best_epoch,
+                "validation_average_precision": gnn.validation_average_precision,
+                "training_seconds": round(gnn.training_seconds, 1),
+            }
+            for name, gnn in gnns.items()
+        },
         "metrics": json.loads(metrics.reset_index().to_json(orient="records")),
         "figures": {k: _portable_path(v) for k, v in figures.items()},
         "runtime_seconds": round(time.perf_counter() - t0, 1),
@@ -554,6 +639,15 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
     model.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=list(MODEL_NAMES))
     model.add_argument("--cv-folds", type=int, default=5, help="0 or 1 disables cross-validation")
     model.add_argument(
+        "--gnn", nargs="*", choices=GNN_NAMES, default=["graphsage"],
+        help="graph neural networks to train (default: graphsage; give no names to skip)",
+    )
+    model.add_argument(
+        "--gnn-features", choices=("auto", "structural", "biological", "both"), default="auto",
+        help="GNN node features; 'auto' = both for registry datasets, structural for --input",
+    )
+    model.add_argument("--gnn-epochs", type=int, default=300)
+    model.add_argument(
         "--betweenness-samples",
         type=_betweenness_arg,
         default="auto",
@@ -590,6 +684,9 @@ def parse_args(argv: list[str] | None = None) -> PipelineConfig:
         negative_ratio=args.negative_ratio,
         negative_strategy=args.negative_strategy,
         models=tuple(args.models),
+        gnn_models=tuple(args.gnn),
+        gnn_features=args.gnn_features,
+        gnn_epochs=args.gnn_epochs,
         cv_folds=args.cv_folds,
         betweenness_samples=args.betweenness_samples,
         max_path_length=args.max_path_length,

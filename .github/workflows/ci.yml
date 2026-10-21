@@ -28,10 +28,11 @@ jobs:
       - name: Smoke-test the pipeline on the bundled synthetic sample
         run: >
           python src/model.py --input data/raw/sample_ppi_edges.tsv --cv-folds 2
-          --betweenness-samples 200 --importance-repeats 2 --top-novel 10 --output-dir results/ci-synthetic
+          --betweenness-samples 200 --importance-repeats 2 --top-novel 10 --gnn-epochs 50 --output-dir results/ci-synthetic
       - name: Download, preprocess and model a real interactome (HI-III)
         run: |
-          python src/datasets.py download hi-iii genes-human
+          python src/datasets.py download hi-iii genes-human hetionet-nodes hetionet-edges
           python src/preprocessing.py --dataset hi-iii
           python src/model.py --dataset hi-iii --cv-folds 2 --betweenness-samples 200 \
-            --importance-repeats 2 --top-novel 10 --output-dir results/ci-hi-iii
+            --importance-repeats 2 --top-novel 10 --gnn graphsage gcn --gnn-epochs 50 \
+            --output-dir results/ci-hi-iii

@@ -1,7 +1,8 @@
 """Benchmark models and heuristics across interactomes and negative-sampling protocols.
 
-Runs the full pipeline (:func:`src.model.run_pipeline`) for every combination
-of dataset and negative-sampling strategy and collects held-out ROC-AUC and
+Runs the full pipeline (:func:`src.model.run_pipeline`, classical models and
+the GraphSAGE GNN) for every combination of dataset and negative-sampling
+strategy and collects held-out ROC-AUC and
 average precision into one table and heatmap. The question it answers is
 whether a method's performance is a property of the method or of the kind of
 interactome it is applied to (binary yeast two-hybrid maps vs literature
@@ -41,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "reports" / "benchmark"
 RUNS_DIR = ROOT / "results" / "benchmark_runs"
 HEATMAP_METHODS = (
-    "logistic_regression", "random_forest", "gradient_boosting",
+    "graphsage", "logistic_regression", "random_forest", "gradient_boosting",
     "l3", "common_neighbors", "adamic_adar", "preferential_attachment", "shortest_path",
 )
 

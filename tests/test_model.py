@@ -18,6 +18,7 @@ from src.model import (
     l3_candidate_pairs,
     load_model,
     main,
+    parse_args,
     rank_novel_interactions,
     resolve_betweenness_samples,
     save_model,
@@ -100,6 +101,8 @@ def test_pipeline_end_to_end(tmp_path):
             "--negatives", "local",
             "--top-novel", "10",
             "--importance-repeats", "2",
+            "--gnn", "graphsage", "gcn",
+            "--gnn-epochs", "30",
         ]
     )
 
@@ -125,6 +128,24 @@ def test_pipeline_end_to_end(tmp_path):
     assert len(novel) == 10
     assert (novel["symbol_a"] == "GENE" + novel["protein_a"].str[1:].astype(int).astype(str)).all()
     assert summary["input"].endswith("edges.tsv")
+
+    # Graph neural networks are evaluated on the same held-out pairs.
+    assert metrics.loc["graphsage", "kind"] == "gnn" and metrics.loc["gcn", "kind"] == "gnn"
+    assert {"model__graphsage", "model__gcn"} <= set(predictions.columns)
+    assert summary["gnn"]["graphsage"]["node_features"] == "structural"  # custom input: no annotation
+    for name in ("graphsage", "gcn"):
+        assert (out / "models" / f"{name}.pt").exists()
+        assert (out / f"gnn_training_{name}.csv").exists()
+        gnn_novel = pd.read_csv(out / f"novel_predictions_{name}.csv")
+        assert len(gnn_novel) == 10 and gnn_novel["symbol_a"].str.startswith("GENE").all()
+
+
+def test_gnn_feature_resolution_and_opt_out():
+    assert PipelineConfig().resolve_gnn_features() == "both"
+    assert PipelineConfig(input_path=SAMPLE_INPUT).resolve_gnn_features() == "structural"
+    assert PipelineConfig(gnn_features="biological").resolve_gnn_features() == "biological"
+    assert parse_args(["--gnn"]).gnn_models == ()
+    assert parse_args([]).gnn_models == ("graphsage",)
 
 
 def test_config_defaults_to_hi_iii():
