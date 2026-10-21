@@ -2,4 +2,9 @@
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
-filterwarnings = ["error::FutureWarning"]
+filterwarnings = [
+    "error::FutureWarning",
+    # Raised inside PyTorch Geometric on import with recent PyTorch releases.
+    "ignore:`torch.jit.script` is deprecated:FutureWarning",
+    "ignore:Failing to pass a value to the 'type_params' parameter:DeprecationWarning",
+]
