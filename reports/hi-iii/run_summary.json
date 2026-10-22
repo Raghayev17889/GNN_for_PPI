@@ -18,6 +18,12 @@
       "random_forest",
       "gradient_boosting"
     ],
+    "gnn_models": [
+      "graphsage"
+    ],
+    "gnn_features": "auto",
+    "gnn_epochs": 300,
+    "gnn_pair_heuristics": false,
     "cv_folds": 5,
     "betweenness_samples": "auto",
     "max_path_length": 6,
@@ -48,7 +54,37 @@
     "test_negatives": 2220
   },
   "best_model": "gradient_boosting",
+  "gnn": {
+    "graphsage": {
+      "node_features": "both",
+      "n_node_features": 136,
+      "best_epoch": 190,
+      "validation_average_precision": 0.9800911410543484,
+      "training_seconds": 212.9
+    }
+  },
   "metrics": [
+    {
+      "method": "graphsage",
+      "kind": "gnn",
+      "roc_auc": 0.9736463152,
+      "average_precision": 0.9736638475,
+      "r_precision": 0.9184684685,
+      "precision": 0.8889834113,
+      "recall": 0.9414414414,
+      "f1": 0.9144607307,
+      "accuracy": 0.9119369369,
+      "mcc": 0.8253120212,
+      "tn": 1959.0,
+      "fp": 261.0,
+      "fn": 130.0,
+      "tp": 2090.0,
+      "cv_roc_auc_mean": null,
+      "cv_roc_auc_std": null,
+      "cv_average_precision_mean": null,
+      "cv_average_precision_std": null,
+      "validation_average_precision": 0.9800911411
+    },
     {
       "method": "gradient_boosting",
       "kind": "model",
@@ -67,7 +103,8 @@
       "cv_roc_auc_mean": 0.9698974312,
       "cv_roc_auc_std": 0.0048128214,
       "cv_average_precision_mean": 0.9709846203,
-      "cv_average_precision_std": 0.0062484656
+      "cv_average_precision_std": 0.0062484656,
+      "validation_average_precision": null
     },
     {
       "method": "logistic_regression",
@@ -87,13 +124,14 @@
       "cv_roc_auc_mean": 0.9697843113,
       "cv_roc_auc_std": 0.003805659,
       "cv_average_precision_mean": 0.9716152593,
-      "cv_average_precision_std": 0.0054772779
+      "cv_average_precision_std": 0.0054772779,
+      "validation_average_precision": null
     },
     {
       "method": "random_forest",
       "kind": "model",
       "roc_auc": 0.9709155101,
-      "average_precision": 0.9711145547,
+      "average_precision": 0.9711145641,
       "r_precision": 0.9238738739,
       "precision": 0.9125827815,
       "recall": 0.9310810811,
@@ -107,7 +145,8 @@
       "cv_roc_auc_mean": 0.9688965993,
       "cv_roc_auc_std": 0.0048974681,
       "cv_average_precision_mean": 0.9698822308,
-      "cv_average_precision_std": 0.0076121229
+      "cv_average_precision_std": 0.0076121229,
+      "validation_average_precision": null
     },
     {
       "method": "l3",
@@ -127,7 +166,8 @@
       "cv_roc_auc_mean": null,
       "cv_roc_auc_std": null,
       "cv_average_precision_mean": null,
-      "cv_average_precision_std": null
+      "cv_average_precision_std": null,
+      "validation_average_precision": null
     },
     {
       "method": "preferential_attachment",
@@ -147,7 +187,8 @@
       "cv_roc_auc_mean": null,
       "cv_roc_auc_std": null,
       "cv_average_precision_mean": null,
-      "cv_average_precision_std": null
+      "cv_average_precision_std": null,
+      "validation_average_precision": null
     },
     {
       "method": "shortest_path",
@@ -167,7 +208,8 @@
       "cv_roc_auc_mean": null,
       "cv_roc_auc_std": null,
       "cv_average_precision_mean": null,
-      "cv_average_precision_std": null
+      "cv_average_precision_std": null,
+      "validation_average_precision": null
     },
     {
       "method": "adamic_adar",
@@ -187,7 +229,8 @@
       "cv_roc_auc_mean": null,
       "cv_roc_auc_std": null,
       "cv_average_precision_mean": null,
-      "cv_average_precision_std": null
+      "cv_average_precision_std": null,
+      "validation_average_precision": null
     },
     {
       "method": "resource_allocation",
@@ -207,7 +250,8 @@
       "cv_roc_auc_mean": null,
       "cv_roc_auc_std": null,
       "cv_average_precision_mean": null,
-      "cv_average_precision_std": null
+      "cv_average_precision_std": null,
+      "validation_average_precision": null
     },
     {
       "method": "common_neighbors",
@@ -227,7 +271,8 @@
       "cv_roc_auc_mean": null,
       "cv_roc_auc_std": null,
       "cv_average_precision_mean": null,
-      "cv_average_precision_std": null
+      "cv_average_precision_std": null,
+      "validation_average_precision": null
     },
     {
       "method": "jaccard",
@@ -247,7 +292,8 @@
       "cv_roc_auc_mean": null,
       "cv_roc_auc_std": null,
       "cv_average_precision_mean": null,
-      "cv_average_precision_std": null
+      "cv_average_precision_std": null,
+      "validation_average_precision": null
     }
   ],
   "figures": {
@@ -256,5 +302,5 @@
     "confusion_matrix": "reports/hi-iii/figures/confusion_matrix.png",
     "feature_importance": "reports/hi-iii/figures/feature_importance.png"
   },
-  "runtime_seconds": 125.7
+  "runtime_seconds": 1280.5
 }
