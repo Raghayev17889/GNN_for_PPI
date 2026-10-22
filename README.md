@@ -1,26 +1,37 @@
-# Graph-Based Protein-Protein Interaction (PPI) Prediction
+# Graph Neural Networks for Protein-Protein Interaction (PPI) Prediction
 
 [![CI](https://github.com/Raghayev17889/GNN_for_PPI/actions/workflows/ci.yml/badge.svg)](https://github.com/Raghayev17889/GNN_for_PPI/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![PyTorch Geometric](https://img.shields.io/badge/PyTorch%20Geometric-GraphSAGE%20%7C%20GCN-orange)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 ## Overview
 
 This repository contains a modular Python pipeline for modelling and predicting protein-protein
-interactions (PPIs). By combining structural graph theory, topological network metrics and machine
-learning classifiers, it shows how computational network analysis can uncover hidden functional
-relationships in molecular biology.
+interactions (PPIs). It combines **graph neural networks** (GraphSAGE and GCN in PyTorch Geometric), which
+learn protein representations from the interaction network and functional annotation, with a classical
+baseline built on structural graph theory and topological network metrics. Together they show how
+computational network analysis can uncover hidden functional relationships in molecular biology.
 
 It was built as part of a bioinformatics portfolio and connects graph analytics with biological network
 interpretation, following the analytical frameworks used in systems biology research. Everything runs on
 **real human interactome data**: four public maps are downloaded, checksum-verified, preprocessed with an
-audit trail, analysed and modelled.
+audit trail, analysed and modelled, and the models are interpreted biologically.
 
 **Results in brief**
 
-* On the **HI-III** human interactome (5,216 proteins, 22,195 binary interactions), topology alone predicts
-  held-out interactions with **ROC-AUC 0.972**. Against hard negatives (non-interacting proteins two or
-  three steps apart) it still reaches **0.934**.
+* On the **HI-III** human interactome (5,216 proteins, 22,195 binary interactions), a two-layer
+  **GraphSAGE** GNN predicts held-out interactions with **ROC-AUC 0.974**, on par with gradient boosting on 15
+  hand-crafted topological features (0.972). A hybrid GNN that also sees path counts is the best method
+  overall (average precision **0.976** vs 0.973).
+* **Message passing turns biology into a predictor.** GO, pathway and tissue annotation alone reach AP 0.93.
+  Aggregated over interaction partners by two GNN layers they reach 0.97. Against hard negatives
+  (non-interacting proteins two or three steps apart, which share annotation with true partners) they stop
+  helping, and the classical model stays ahead (ROC-AUC 0.934 vs 0.924 for the best GNN).
+* **Biological interpretation.** GNN embeddings recover molecular machines such as the general transcription
+  factors, CCR4-NOT and cullin-RING ligases, partly even without annotation. The top novel predictions centre
+  on the BCL-2 apoptosis network, with independent literature support for some of them, and are far less
+  hub-dominated than topological rankings (36% vs 93% involve a top-1% hub).
 * The most informative signal is not shared partners but **paths of length three (L3)**. In systematic
   yeast two-hybrid maps, interacting proteins share *fewer* partners than degree-matched random networks
   (0.78-0.88×) but are linked by *more* length-3 paths (1.5×). This matches the complementarity principle
@@ -35,6 +46,19 @@ audit trail, analysed and modelled.
 </p>
 
 ## Key features
+
+* **Graph neural networks** (`src/gnn_model.py`). Two-layer **GraphSAGE** and **GCN** encoders in PyTorch
+  Geometric, an MLP control without message passing, a symmetric pair decoder, an optional hybrid decoder with
+  path heuristics, exhaustive scoring of all 13.6 million unobserved pairs, and self-contained checkpoints.
+* **Biological node features** (`src/node_features.py`, `src/annotations.py`). Structural descriptors plus
+  GO biological process, GO cellular component, pathways and tissue expression from Hetionet, compressed by
+  truncated SVD.
+* **GNN experiments** (`src/gnn_experiments.py`). An ablation of 3 encoders plus a hybrid × 3 feature sets ×
+  3 seeds × 2 negative protocols, and validation of novel predictions against three independent interactome
+  maps.
+* **Biological interpretation** (`src/interpretation.py`, notebook 04). Embedding modules with pathway
+  enrichment against a permutation null, hubs and bottlenecks (Yu et al., 2007), bridging interactions, and
+  hub bias of predictions.
 
 * **Real data acquisition.** A registry of public human interactomes (HI-III, HI-II-14, Lit-BM-13,
   BioPlex 2.0, BioGRID) and an NCBI gene annotation, downloaded from commit-pinned URLs with SHA-256
@@ -62,7 +86,8 @@ audit trail, analysed and modelled.
   confusion matrices and permutation importance, benchmarked against unsupervised heuristics and across
   datasets (`src/benchmark.py`).
 * **Novel interaction ranking** with gene symbols, plus a check for hub bias.
-* **Tested:** 83 `pytest` tests and GitHub Actions CI, which downloads and models HI-III on every push.
+* **Tested:** 126 `pytest` tests and GitHub Actions CI, which downloads HI-III and trains the classical models
+  and two GNNs on every push.
 
 ## Data
 
@@ -73,6 +98,7 @@ audit trail, analysed and modelled.
 | Lit-BM-13 | binary, literature-curated | 4,909 | 9,865 | Rolland et al., 2014 |
 | BioPlex 2.0 | co-complex, AP-MS | 10,801 | 55,862 | Huttlin et al., 2017 |
 | BioGRID | mixed | 15,284 | 183,397 | BioGRID human physical interactions |
+| Hetionet v1.0 | annotation | | | GO, pathways, tissue expression for GNN node features (Himmelstein et al., 2017) |
 
 Counts are after preprocessing. Files come from the repository of Kovács et al. (2019) as Entrez gene ID
 edge lists, and gene symbols and types from an NCBI Entrez Gene snapshot. See
@@ -125,7 +151,9 @@ the walkthrough is in
 
 | Method | Type | ROC-AUC (uniform neg.) | Avg. precision (uniform) | ROC-AUC (local neg.) | Avg. precision (local) |
 |---|---|---:|---:|---:|---:|
-| Gradient boosting | model | **0.972** | **0.973** | **0.934** | **0.927** |
+| GraphSAGE + pair heuristics | GNN (hybrid) | **0.974** | **0.975** | 0.917 | 0.912 |
+| GraphSAGE | GNN | **0.974** | 0.974 | 0.908 | 0.904 |
+| Gradient boosting | model | 0.972 | 0.973 | **0.934** | **0.927** |
 | Logistic regression | model | 0.971 | 0.973 | 0.925 | 0.916 |
 | Random forest | model | 0.971 | 0.971 | 0.932 | 0.925 |
 | L3 paths | heuristic | 0.958 | 0.962 | 0.872 | 0.883 |
@@ -135,7 +163,9 @@ the walkthrough is in
 | Common neighbours | heuristic | 0.749 | 0.745 | 0.527 | 0.594 |
 | Jaccard | heuristic | 0.735 | 0.682 | 0.364 | 0.404 |
 
-Five-fold cross-validated ROC-AUC on the training pairs is 0.969-0.970 for all three models. Permutation
+The GraphSAGE rows come from `python src/model.py` (GraphSAGE is trained by default) and the hybrid from
+`src/gnn_experiments.py` (mean of three seeds). Five-fold cross-validated ROC-AUC on the training pairs is
+0.969-0.970 for all three classical models. Permutation
 importance of the best model is dominated by L3: shuffling it costs 0.37 ROC-AUC, more than 25 times any
 other feature.
 
@@ -145,9 +175,10 @@ other feature.
 </p>
 
 **Candidate novel interactions.** `reports/hi-iii/novel_predictions.csv` lists the 100 unobserved pairs the
-best model ranks highest (e.g. KRTAP10-8–KANK2, KRTAP10-3–LCE2A). Almost all of them involve one of
-the top-1% hubs, mainly keratin-associated proteins with hundreds of Y2H partners. Notebook 02 therefore
-also lists the best-ranked candidates that avoid the largest hubs.
+best classical model ranks highest (e.g. KRTAP10-8–KANK2, KRTAP10-3–LCE2A). Almost all of them involve one of
+the top-1% hubs, mainly keratin-associated proteins with hundreds of Y2H partners. GraphSAGE's list
+(`novel_predictions_graphsage.csv`) is led instead by BCL-2 family pairs (BAK1–BIK, BCL2L10–BAK1, MCL1–BIK)
+and is discussed in notebook 04.
 
 ### Benchmark across interactomes
 
@@ -164,16 +195,145 @@ also lists the best-ranked candidates that avoid the largest hubs.
 * Lit-BM-13 is the exception for L3: on the literature-curated map, preferential attachment is the stronger
   single signal (0.90 vs 0.83 with uniform negatives, 0.79 vs 0.66 with local ones). The trained models
   still reach 0.94.
-* The supervised models are the best method in every setting, and their advantage grows with hard negatives
+* The supervised models are the best methods in every setting, and their advantage grows with hard negatives
   (+0.06 to +0.26 ROC-AUC over L3).
+* **GraphSAGE** is the best or joint-best method with uniform negatives on HI-III (0.974) and Lit-BM-13 (0.956
+  vs 0.941), where annotation adds most because literature-curated interactions follow known biology. With
+  hard negatives it trails the tree models by 0.03-0.08 ROC-AUC on every map: pair-level path counts matter
+  more there than learned node embeddings (see the hybrid model below).
+
+## Graph neural networks
+
+`src/gnn_model.py` adds a **graph neural network** that learns protein representations directly from the
+interactome, next to the classical feature-engineering pipeline. Both are trained on the same leakage-free
+split and scored on the same 4,440 held-out pairs, so the comparison is exact.
+
+```
+node features ──► [ 2-layer GraphSAGE / GCN encoder ] ──► protein embedding h (64-d) ─┐
+ structural (4)        message passing over the        ┌────────────────────────────┘
+ + biological (132)    interaction network             ▼
+                                              pair decoder  MLP([h_u ⊙ h_v , |h_u − h_v|  (+ L3, CN, RA)])
+                                                                      │
+                                                              P(u and v interact)
+```
+
+* **Encoder.** Two message-passing layers (PyTorch Geometric), so each embedding summarises a protein's
+  partners and its partners' partners, the two-step neighbourhood in which the L3 signal lives.
+  * **GraphSAGE** (Hamilton et al., 2017): `h_v' = W1·h_v + W2·mean(h_u : u ∈ N(v))`. The separate
+    self-term keeps a protein's own identity from being averaged away by hundreds of hub partners.
+  * **GCN** (Kipf & Welling, 2017): symmetric degree-normalised averaging over the protein and its
+    partners.
+  * **MLP control**: the same two layers *without* message passing, to measure what the network adds.
+* **Node features** (`src/node_features.py`).
+  * *Structural* (4): log degree, clustering, mean partner degree, two-hop reach. They are recomputed on
+    whichever graph messages pass over, so a hidden interaction never shows up in its proteins' degree.
+  * *Biological* (132): GO biological process, GO cellular component, pathway membership (Reactome,
+    WikiPathways, PID) and tissue expression from Hetionet, each compressed by truncated SVD to 32
+    components, plus coverage flags. GO *molecular function* is excluded because "protein binding" is
+    itself annotated from interaction assays.
+* **Decoder.** A symmetric MLP on `[h_u ⊙ h_v, |h_u − h_v|]`. A dot product would only reward *similar*
+  proteins (triadic closure), whereas binding partners are often complementary.
+* **Hybrid option** (`--gnn-pair-heuristics`). The decoder also receives three pair-level path counts (L3,
+  common neighbours, resource allocation). A node-wise GNN cannot count the paths between two specific
+  proteins (Zhang et al., 2021), and those paths are what separates true interactions from nearby
+  non-interacting proteins.
+* **Training without leakage.** Messages pass over `train_graph` during training and over `test_graph` at
+  evaluation. Each epoch hides a random 20% of the message edges and uses them as extra positives.
+  Negatives are re-sampled every epoch (uniform, or half "local" hard negatives) and never include a known
+  interaction. Early stopping uses average precision on 20% of the training pairs. Test pairs are never
+  seen.
+
+### GNN results on HI-III
+
+`python src/gnn_experiments.py` trains every encoder × feature set with three seeds under both negative
+protocols (72 models) and writes [`reports/gnn/`](reports/gnn/). Mean over seeds:
+
+| Model | Node features | AP, uniform neg. | AP, local neg. | ROC-AUC, uniform | ROC-AUC, local |
+|---|---|---:|---:|---:|---:|
+| GraphSAGE + pair heuristics | structural | **0.976** ± 0.001 | 0.917 ± 0.001 | 0.975 | 0.924 |
+| GraphSAGE + pair heuristics | biological | 0.973 ± 0.002 | 0.913 ± 0.002 | 0.972 | 0.917 |
+| GraphSAGE + pair heuristics | structural + biological | 0.975 ± 0.000 | 0.912 ± 0.002 | 0.974 | 0.917 |
+| GraphSAGE | structural | 0.968 ± 0.001 | 0.900 ± 0.001 | 0.969 | 0.908 |
+| GraphSAGE | biological | 0.969 ± 0.002 | 0.894 ± 0.005 | 0.970 | 0.902 |
+| GraphSAGE | structural + biological | 0.972 ± 0.000 | 0.897 ± 0.001 | 0.972 | 0.902 |
+| GCN | structural | 0.969 ± 0.001 | 0.893 ± 0.002 | 0.969 | 0.899 |
+| GCN | biological | 0.969 ± 0.001 | 0.879 ± 0.008 | 0.969 | 0.879 |
+| GCN | structural + biological | 0.973 ± 0.001 | 0.896 ± 0.001 | 0.973 | 0.894 |
+| MLP (no message passing) | structural | 0.965 ± 0.000 | 0.883 ± 0.001 | 0.965 | 0.888 |
+| MLP (no message passing) | biological | 0.932 ± 0.001 | 0.763 ± 0.013 | 0.930 | 0.787 |
+| MLP (no message passing) | structural + biological | 0.962 ± 0.001 | 0.871 ± 0.005 | 0.963 | 0.877 |
+| Gradient boosting (15 topological features) | – | 0.973 | **0.927** | 0.972 | 0.934 |
+| L3 paths | – | 0.963 | 0.883 | 0.958 | 0.872 |
+
+<p align="center">
+  <img src="reports/gnn/figures/ablation_average_precision.png" width="95%" alt="GNN ablation on HI-III">
+</p>
+
+* **Message passing is what makes annotation useful.** On biological features alone, the MLP reaches AP
+  0.932; two GraphSAGE or GCN layers lift the same features to 0.969. What a protein does says little about
+  whether two given proteins bind, but what its *partners* do says a lot: guilt by association, learned end to
+  end.
+* **Annotation helps against random pairs, not against neighbours.** With uniform negatives, structural plus
+  biological features give the best plain GNN (GCN 0.973). With local negatives they add nothing, because
+  proteins two or three steps apart usually sit in the same module and share GO terms and pathways with the
+  true partners.
+* **Pair-level paths still matter.** Against hard negatives the plain GNNs (AP 0.88-0.90) trail gradient
+  boosting (0.927): a node-wise encoder cannot count the length-3 paths *between* two proteins, and that count
+  reflects complementary binding interfaces (Kovács et al., 2019). Feeding the decoder L3, common-neighbour and
+  resource-allocation scores (hybrid) recovers most of the gap (0.917) and gives the best uniform-negative
+  model (0.976).
+* Seed-to-seed standard deviations are about 0.001 AP, far below these differences.
+
+**Independent support for novel predictions.** The top-ranked *unobserved* HI-III pairs were looked up in
+three other maps of the human interactome: BioPlex 2.0 (AP-MS), Lit-BM-13 (literature) and HI-II-14
+(an earlier Y2H screen).
+
+* About **8% of every model's top-1,000 predictions** (12% for L3) appear in at least one independent map,
+  against **0.12%** for random unobserved pairs: a 70-100-fold enrichment.
+* L3 has the highest support, but every one of its top-100 predictions involves a top-1% hub, and its support
+  comes from HI-II-14, an earlier screen with the same assay and the same sticky hubs. Only **36%** of
+  GraphSAGE's top-100 predictions involve such a hub (structure-only GraphSAGE: 7%), against 93% for gradient
+  boosting.
+* GraphSAGE's earliest support comes from the literature-curated Lit-BM-13: two of its top ten predictions,
+  **MCL1–BIK** and **MCL1–BCL2L1**, are published interactions missing from HI-III.
+
+<p align="center">
+  <img src="reports/gnn/figures/external_validation.png" width="55%" alt="External support for predictions">
+  <img src="reports/gnn/figures/training_curve.png" width="42%" alt="GraphSAGE training curve">
+</p>
+
+### Biological interpretation
+
+[`notebooks/04_gnn_biological_interpretation.ipynb`](notebooks/04_gnn_biological_interpretation.ipynb)
+loads the trained GraphSAGE checkpoint (`reports/gnn/model/graphsage_hi-iii.pt`), extracts the protein
+embeddings and asks what they mean biologically.
+
+* **Functional modules.** 72% of 25 embedding clusters are enriched for a pathway (3% for shuffled clusters).
+  They are molecular machines: the general transcription factors TFIIA/B/E/H (22-fold, FDR 4e-21), CCR4-NOT
+  mRNA decay, cullin-RING ubiquitin ligases, the pre-replicative complex, translation initiation factors. A
+  structure-only GNN that never sees annotation still forms several-fold more enriched clusters than chance.
+* **Partners are complementary, not similar.** 88% of HI-III interactions join two *different* embedding
+  clusters. The GNN learns which kinds of proteins bind which, so the decoder uses element-wise products and
+  differences rather than similarity.
+* **Hubs and bottlenecks.** The main bottlenecks (MEOX2, CYSRT1, LNX1, PROP1, PICK1, UBQLN2) are scaffolds,
+  adaptors and promiscuous Y2H proteins, which the GNN places in one functionally unenriched cluster.
+  Bridging interactions include CDC37–FATE1 (the HSP90 kinase co-chaperone). Predicted interaction propensity
+  correlates with degree (Spearman 0.81), the source of hub bias in link prediction.
+* **Novel predictions.** The top of the ranking is the **BCL-2 apoptosis network** (BAK1–BIK, BAK1–BCL2,
+  MCL1–BIK, BCL2L10–BAK1) and the **TFIID/TFIIA pre-initiation machinery**. It also contains pairs of
+  anti-apoptotic paralogs (MCL1–BCL2A1) that share partners without binding each other, a known failure mode
+  of similarity-driven predictors.
 
 ## Methodology
 
 ```
-datasets ──► preprocessing ──► graph_builder ──► leakage-free split ──► feature_extractor ──► model ──► evaluate
- download     audited cleaning   NetworkX graph   train/test graphs     15 features/pair      3 classifiers  metrics,
- + verify     + gene symbols                      + negatives                                  + CV           plots, ranking
-                   └──► data_analysis (statistics, overlaps, closure vs null models)            benchmark (4 maps × 2 protocols)
+datasets ──► preprocessing ──► graph_builder ──► leakage-free split ─┬─► feature_extractor ──► model ──────► evaluate
+ download     audited cleaning   NetworkX graph   train/test graphs   │    15 features/pair     3 classifiers   metrics,
+ + verify     + gene symbols                      + negatives         │                                         plots, ranking
+                                                                      └─► node_features ──► gnn_model ─────┘
+ annotations (Hetionet: GO, pathways, tissues) ─────────────────────────► structural +       GraphSAGE / GCN
+                                                                          biological          (PyTorch Geometric)
+ data_analysis (statistics, overlaps, closure)    benchmark (4 maps × 2 protocols)    gnn_experiments ──► interpretation
 ```
 
 1. **Split.** Hide 10% of interactions as test positives (`test_graph = G - test`). Then hide another
@@ -186,6 +346,10 @@ datasets ──► preprocessing ──► graph_builder ──► leakage-free 
 4. **Evaluate.** Score test pairs with every model and every heuristic, plot ROC/PR curves, and compute
    permutation importance for the best model.
 5. **Predict.** Featurise the top-L3 unobserved pairs on the full network and rank them with the best model.
+   The GNN instead embeds every protein once and scores all unobserved pairs.
+6. **GNN.** Train on the same split: messages pass over `train_graph` (with a random 20% of its edges hidden
+   each epoch as extra positives) and over `test_graph` at evaluation (see
+   [Graph neural networks](#graph-neural-networks)).
 
 **L3 score** (degree-normalised paths of length three):
 
@@ -209,10 +373,12 @@ It is computed for many pairs at once as rows of $A D^{-1/2} A D^{-1/2} A$ with 
 ├── notebooks/
 │   ├── 01_data_preprocessing_and_eda.ipynb   # real data: cleaning audit, statistics, overlaps, closure
 │   ├── 02_feature_and_model_analysis.ipynb   # HI-III: features, models, hard negatives, novel predictions
-│   └── 03_synthetic_network_exploration.ipynb  # appendix: the synthetic sample
+│   ├── 03_synthetic_network_exploration.ipynb  # appendix: the synthetic sample
+│   └── 04_gnn_biological_interpretation.ipynb  # GNN embeddings, modules, hubs, novel predictions
 ├── reports/
 │   ├── data_analysis/               # tables and figures from src/data_analysis.py
-│   ├── hi-iii/                      # reference pipeline run on HI-III
+│   ├── hi-iii/                      # reference pipeline run on HI-III (classical models + GraphSAGE)
+│   ├── gnn/                         # GNN ablation, external validation, model/graphsage_hi-iii.pt
 │   ├── benchmark/                   # cross-dataset benchmark
 │   └── synthetic_sample/            # pipeline on the synthetic network
 ├── src/
@@ -221,7 +387,12 @@ It is computed for many pairs at once as rows of $A D^{-1/2} A D^{-1/2} A$ with 
 │   ├── data_analysis.py             # network statistics, overlaps, closure tests, plots
 │   ├── graph_builder.py             # loading, graph construction, leakage-free splits
 │   ├── feature_extractor.py         # topological node and pair features
-│   ├── model.py                     # classifiers and the end-to-end pipeline (CLI)
+│   ├── annotations.py               # Hetionet GO / pathway / tissue annotation, enrichment tests
+│   ├── node_features.py             # structural + biological node features for GNNs
+│   ├── gnn_model.py                 # GraphSAGE / GCN link predictor (PyTorch Geometric)
+│   ├── gnn_experiments.py           # GNN ablation, reference model, external validation (CLI)
+│   ├── interpretation.py            # embedding modules, hubs/bottlenecks, propensity
+│   ├── model.py                     # classifiers, GNN training and the end-to-end pipeline (CLI)
 │   ├── evaluate.py                  # metrics, plots, evaluation CLI
 │   └── benchmark.py                 # pipeline across datasets and protocols
 ├── tests/                           # pytest suite
@@ -245,12 +416,15 @@ It is computed for many pairs at once as rows of $A D^{-1/2} A D^{-1/2} A$ with 
    ```bash
    python -m venv venv
    source venv/bin/activate        # On Windows use: venv\Scripts\activate
+   pip install torch --index-url https://download.pytorch.org/whl/cpu   # optional: CPU-only PyTorch
    pip install -r requirements.txt
    # for tests and notebooks:
    pip install -r requirements-dev.txt
    ```
 
-Downloads need internet access to `raw.githubusercontent.com` (about 8 MB for all datasets).
+Downloads need internet access to `raw.githubusercontent.com` and `media.githubusercontent.com` (about
+8 MB for the interactomes and 15 MB for Hetionet). A GPU is not needed: every GNN here trains on a laptop
+CPU in a few minutes.
 
 ## Usage
 
@@ -290,28 +464,42 @@ python src/model.py --input data/raw/sample_ppi_edges.tsv   # bundled synthetic 
 | `--negative-ratio` | 1.0 | negatives per positive |
 | `--models` | all three | subset of `logistic_regression random_forest gradient_boosting` |
 | `--cv-folds` | 5 | cross-validation folds (0 disables) |
+| `--gnn` | `graphsage` | GNNs to train (`graphsage`, `gcn`, `mlp`); `--gnn` with no names skips them |
+| `--gnn-features` | `auto` | `structural`, `biological` or `both` (`auto`: both for registry datasets) |
+| `--gnn-pair-heuristics` | off | hybrid decoder that also sees L3, common-neighbour and resource-allocation scores |
+| `--gnn-epochs` | 300 | maximum training epochs (early stopping on validation AP) |
 | `--betweenness-samples` | `auto` | `exact`, a sample size, or `auto` (exact up to 3,000 proteins, else 1,000 samples) |
 | `--top-novel` | 100 | number of novel interactions to rank (0 skips) |
 | `--output-dir` | `results/` | where artifacts are written |
 | `--seed` | 42 | controls every random step |
 
-Outputs: `metrics.csv`, `predictions.csv`, `feature_importance.csv`, `novel_predictions.csv` (with gene
-symbols), `run_summary.json`, `figures/*.png` and `models/*.joblib`. To re-plot or re-score saved
+Outputs: `metrics.csv`, `predictions.csv`, `feature_importance.csv`, `novel_predictions.csv` and
+`novel_predictions_<gnn>.csv` (with gene symbols), `gnn_training_<gnn>.csv`, `run_summary.json`,
+`figures/*.png`, `models/*.joblib` and `models/<gnn>.pt`. To re-plot or re-score saved
 predictions, run `python src/evaluate.py --predictions results/predictions.csv`.
 
 ### 4. Benchmark across datasets
 
 ```bash
-python src/benchmark.py                          # 4 interactomes × 2 protocols, about 15 minutes
+python src/benchmark.py                          # 4 interactomes × 2 protocols, about an hour on CPU
 ```
 
-### 5. Explore the notebooks
+### 5. GNN experiments
+
+```bash
+python src/gnn_experiments.py                    # 72 GNNs on HI-III -> reports/gnn/ (about 45 min on CPU)
+python src/gnn_experiments.py --seeds 1 --epochs 100 --output-dir results/gnn-quick
+```
+
+Each trained model is cached in `results/gnn_experiment_cache/`, so an interrupted run resumes.
+
+### 6. Explore the notebooks
 
 ```bash
 jupyter lab notebooks/
 ```
 
-### 6. Use as a library
+### 7. Use as a library
 
 ```python
 from src.graph_builder import load_graph, make_link_prediction_split
@@ -326,15 +514,27 @@ X_train = extractor.fit_transform(split.train_graph, split.train_pairs)
 X_test = TopologicalFeatureExtractor(betweenness_samples=1000).fit_transform(split.test_graph, split.test_pairs)
 models = train_models(X_train, split.train_labels)
 probabilities = models["gradient_boosting"].predict_proba(X_test)
+
+# Graph neural network on the same split
+from src.annotations import load_annotations
+from src.gnn_model import GNNConfig, TrainedGNN, train_link_predictor
+from src.node_features import NodeFeatures
+
+features = NodeFeatures.from_graph(G, "both", load_annotations())
+gnn = train_link_predictor(split, features, GNNConfig(architecture="graphsage"))
+gnn_probabilities = gnn.predict_proba(split.test_graph, split.test_pairs)
+embeddings = gnn.embed(G)                            # proteins x 64 DataFrame
+reference = TrainedGNN.load("reports/gnn/model/graphsage_hi-iii.pt")
 ```
 
-### 7. Run the tests
+### 8. Run the tests
 
 ```bash
 pytest
 ```
 
-The tests use small in-memory graphs and need no downloads.
+The tests use small in-memory graphs and need no downloads. They include brute-force checks of the
+exhaustive GNN ranking and of checkpoint round trips.
 
 ## Limitations and next steps
 
@@ -343,9 +543,14 @@ The tests use small in-memory graphs and need no downloads.
   experimental validation.
 * Top-ranked novel candidates favour hubs. Degree-aware calibration or degree-matched negatives would be a
   useful extension.
-* Topology ignores sequence, structure and expression. Sequence embeddings (e.g. ESM) or Gene Ontology
-  similarity as pair features, and a graph neural network (GNN) baseline trained on the same leakage-free
-  split, are natural next steps. A further test is to train on one map and evaluate on another.
+* The GNN uses annotation but not sequence or structure. Protein language-model embeddings (e.g. ESM-2) as
+  node features are a natural next step, as is a subgraph GNN (SEAL-style labelling trick) that learns the
+  pair-level path patterns the hybrid currently receives as hand-crafted counts.
+* GO and pathway annotation is partly derived from published interactions, so annotation-based features and
+  literature-based validation are not fully independent. The structure-only GNN is the circularity-free
+  reference.
+* Similar embeddings make the GNN predict paralog pairs (e.g. two anti-apoptotic BCL-2 proteins) that share
+  partners without binding each other. A further test is to train on one map and evaluate on another.
 * The gene annotation is a 2016 NCBI snapshot. A current HGNC or NCBI release would recover a few more
   discontinued identifiers.
 
@@ -353,11 +558,21 @@ The tests use small in-memory graphs and need no downloads.
 
 * **Language:** Python 3.10+
 * **Graph analysis:** NetworkX, SciPy (sparse matrices, `csgraph`)
+* **Graph neural networks:** PyTorch, PyTorch Geometric (`SAGEConv`, `GCNConv`)
 * **Machine learning:** scikit-learn, pandas, NumPy
 * **Visualisation:** Matplotlib, Seaborn
 * **Quality:** pytest, GitHub Actions
 
 ## References
+
+* Hamilton, W. L., Ying, R. & Leskovec, J. Inductive representation learning on large graphs (GraphSAGE).
+  *NeurIPS* (2017).
+* Kipf, T. N. & Welling, M. Semi-supervised classification with graph convolutional networks. *ICLR* (2017).
+* Zhang, M., Li, P., Xia, Y., Wang, K. & Jin, L. Labeling trick: a theory of using graph neural networks for
+  multi-node representation learning. *NeurIPS* (2021).
+* Himmelstein, D. S. *et al.* Systematic integration of biomedical knowledge prioritizes drugs for
+  repurposing (Hetionet). *eLife* 6, e26726 (2017).
+* Yu, H. *et al.* The importance of bottlenecks in protein networks. *PLoS Comput. Biol.* 3, e59 (2007).
 
 * Kovács, I. A. *et al.* Network-based prediction of protein interactions. *Nature Communications* 10,
   1240 (2019).
