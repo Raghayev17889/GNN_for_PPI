@@ -16,7 +16,9 @@ classical pipeline:
    Lit-BM-13 literature curation, HI-II-14 yeast two-hybrid).
 
 Every GNN configuration is trained with several random seeds; the reported
-numbers are means and standard deviations over seeds on a fixed split.
+numbers are means and standard deviations over seeds on a fixed split. Each
+trained model is cached (``--cache-dir``), so an interrupted run resumes where
+it stopped.
 
 Usage::
 
@@ -75,6 +77,7 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "reports" / "gnn"
+DEFAULT_CACHE = ROOT / "results" / "gnn_experiment_cache"
 EXTERNAL_MAPS: tuple[str, ...] = ("bioplex-2", "lit-bm-13", "hi-ii-14")
 #: Model variants of the ablation: name -> (encoder architecture, pair heuristics in the decoder).
 VARIANTS: dict[str, tuple[str, bool]] = {
@@ -122,8 +125,12 @@ def run_ablation(
     seeds: Sequence[int] = (0, 1, 2),
     epochs: int = 300,
     split_seed: int = 42,
+    cache_dir: str | Path | None = None,
 ) -> tuple[pd.DataFrame, dict, dict]:
     """Train every model variant x feature set x seed for each negative protocol.
+
+    With ``cache_dir``, every run's metrics (and the first seed's checkpoint)
+    are written there and reused on the next call with the same settings.
 
     Returns
     -------
@@ -137,6 +144,9 @@ def run_ablation(
     nodes = canonical_nodes(graph)
     biological = biological_features(nodes, annotations, seed=split_seed)
     rows, splits, models = [], {}, {}
+    cache = Path(cache_dir) if cache_dir is not None else None
+    if cache is not None:
+        cache.mkdir(parents=True, exist_ok=True)
     for strategy in strategies:
         split = make_link_prediction_split(graph, negative_strategy=strategy, seed=split_seed)
         reference = classical_reference(split, split_seed)
@@ -149,6 +159,15 @@ def run_ablation(
             for variant in variants:
                 architecture, pair_heuristics = VARIANTS[variant]
                 for i, seed in enumerate(seeds):
+                    key = f"{strategy}__{variant}__{kind}__seed{seed}__epochs{epochs}__split{split_seed}"
+                    row_path = cache / f"{key}.json" if cache else None
+                    model_path = cache / f"{key}.pt" if cache else None
+                    if row_path is not None and row_path.exists() and (i > 0 or model_path.exists()):
+                        rows.append(json.loads(row_path.read_text()))
+                        if i == 0:
+                            models[(strategy, variant, kind)] = TrainedGNN.load(model_path)
+                        logger.info("%s | %-15s | %-10s | seed %d: cached", strategy, variant, kind, seed)
+                        continue
                     features = NodeFeatures(nodes, kind, biological)
                     config = GNNConfig(architecture=architecture, features=kind, epochs=epochs,
                                        negative_strategy=strategy, pair_heuristics=pair_heuristics, seed=seed)
@@ -164,6 +183,10 @@ def run_ablation(
                     })
                     if i == 0:
                         models[(strategy, variant, kind)] = trained
+                    if cache is not None:
+                        if i == 0:
+                            trained.save(model_path)
+                        row_path.write_text(json.dumps(rows[-1]))
                     logger.info("%s | %-15s | %-10s | seed %d: AP %.3f", strategy, variant, kind, seed,
                                 rows[-1]["average_precision"])
     return pd.DataFrame(rows), splits, models
@@ -319,6 +342,7 @@ def run_experiments(
     epochs: int = 300,
     top_k: int = 1000,
     split_seed: int = 42,
+    cache_dir: str | Path | None = DEFAULT_CACHE,
 ) -> dict:
     """Run the ablation, save the reference model and validate novel predictions."""
     start = time.perf_counter()
@@ -329,7 +353,9 @@ def run_experiments(
     annotations = load_annotations()
 
     # 1-3. Ablation
-    runs, splits, models = run_ablation(graph, annotations, seeds=seeds, epochs=epochs, split_seed=split_seed)
+    runs, splits, models = run_ablation(
+        graph, annotations, seeds=seeds, epochs=epochs, split_seed=split_seed, cache_dir=cache_dir
+    )
     summary = summarise_runs(runs)
     output_dir.mkdir(parents=True, exist_ok=True)
     runs.round(5).to_csv(output_dir / "ablation_runs.csv", index=False)
@@ -410,11 +436,15 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--seeds", type=int, default=3, help="random seeds per GNN configuration")
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--top-k", type=int, default=1000, help="novel predictions to validate")
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE,
+                        help="per-model cache for resuming interrupted runs")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
                         datefmt="%H:%M:%S")
     use_headless_backend()
-    return run_experiments(args.dataset, args.output_dir, tuple(range(args.seeds)), args.epochs, args.top_k)
+    return run_experiments(
+        args.dataset, args.output_dir, tuple(range(args.seeds)), args.epochs, args.top_k, cache_dir=args.cache_dir
+    )
 
 
 if __name__ == "__main__":

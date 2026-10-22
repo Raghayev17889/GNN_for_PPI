@@ -73,6 +73,21 @@ def test_ablation_end_to_end(small_ppi_graph):
     assert plot_validation_curve(curve, 0.001).axes
 
 
+def test_ablation_resumes_from_cache(small_ppi_graph, tmp_path, caplog):
+    nodes = canonical_nodes(small_ppi_graph)
+    annotations = {"go_bp": {f"t{i}": frozenset(str(n) for n in nodes[i::4]) for i in range(4)}}
+    kwargs = dict(strategies=("uniform",), variants=("graphsage",), feature_kinds=("structural",),
+                  seeds=(0, 1), epochs=5, cache_dir=tmp_path)
+    first, _, models = run_ablation(small_ppi_graph, annotations, **kwargs)
+    assert len(list(tmp_path.glob("*.json"))) == 2 and len(list(tmp_path.glob("*.pt"))) == 1
+    with caplog.at_level("INFO"):
+        second, _, cached = run_ablation(small_ppi_graph, annotations, **kwargs)
+    assert caplog.text.count("cached") == 2
+    pd.testing.assert_frame_equal(first, second)
+    key = ("uniform", "graphsage", "structural")
+    assert cached[key].config == models[key].config
+
+
 def test_variants_cover_every_architecture():
     assert {architecture for architecture, _ in VARIANTS.values()} == {"graphsage", "gcn", "mlp"}
     assert any(pairs for _, pairs in VARIANTS.values())
