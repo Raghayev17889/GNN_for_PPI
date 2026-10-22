@@ -1,0 +1,36 @@
+method,k,in_bioplex-2,in_lit-bm-13,in_hi-ii-14,in_any
+GraphSAGE (structural + biological),10,0.0,0.2,0.0,0.2
+GraphSAGE (structural + biological),25,0.0,0.08,0.0,0.08
+GraphSAGE (structural + biological),50,0.0,0.04,0.0,0.04
+GraphSAGE (structural + biological),100,0.0,0.02,0.06,0.08
+GraphSAGE (structural + biological),250,0.004,0.012,0.064,0.076
+GraphSAGE (structural + biological),500,0.002,0.006,0.078,0.084
+GraphSAGE (structural + biological),1000,0.001,0.004,0.078,0.082
+GraphSAGE (structural),10,0.0,0.0,0.0,0.0
+GraphSAGE (structural),25,0.0,0.0,0.0,0.0
+GraphSAGE (structural),50,0.0,0.0,0.06,0.06
+GraphSAGE (structural),100,0.0,0.0,0.11,0.11
+GraphSAGE (structural),250,0.0,0.0,0.088,0.088
+GraphSAGE (structural),500,0.0,0.0,0.08,0.08
+GraphSAGE (structural),1000,0.0,0.0,0.083,0.083
+GraphSAGE + pair heuristics,10,0.0,0.0,0.0,0.0
+GraphSAGE + pair heuristics,25,0.0,0.0,0.04,0.04
+GraphSAGE + pair heuristics,50,0.0,0.0,0.08,0.08
+GraphSAGE + pair heuristics,100,0.0,0.0,0.07,0.07
+GraphSAGE + pair heuristics,250,0.004,0.0,0.072,0.076
+GraphSAGE + pair heuristics,500,0.004,0.002,0.082,0.088
+GraphSAGE + pair heuristics,1000,0.002,0.001,0.082,0.085
+Gradient boosting,10,0.0,0.0,0.1,0.1
+Gradient boosting,25,0.0,0.0,0.08,0.08
+Gradient boosting,50,0.0,0.0,0.06,0.06
+Gradient boosting,100,0.0,0.0,0.05,0.05
+Gradient boosting,250,0.0,0.004,0.052,0.056
+Gradient boosting,500,0.0,0.002,0.082,0.084
+Gradient boosting,1000,0.0,0.001,0.092,0.093
+L3 paths,10,0.0,0.0,0.1,0.1
+L3 paths,25,0.0,0.0,0.16,0.16
+L3 paths,50,0.0,0.0,0.2,0.2
+L3 paths,100,0.0,0.0,0.17,0.17
+L3 paths,250,0.004,0.0,0.148,0.152
+L3 paths,500,0.002,0.0,0.136,0.138
+L3 paths,1000,0.001,0.0,0.122,0.123
